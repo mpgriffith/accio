@@ -4,16 +4,13 @@
 
 A comprehensive Python package for identifying, analyzing, and assigning plasmids in bacterial genome assemblies using multi-modal similarity scoring and intelligent assignment algorithms.
 
-## ✨ Features
+##  Features
 
-- **🔍 Smart Plasmid Discovery**: Multi-modal scoring combining BLAST, Mash, synteny, and read coverage analysis
-- **🧬 Intelligent Assignment**: Greedy algorithm prevents conflicts and ensures biological consistency  
-- **🗄️ Database Management**: Create and manage custom plasmid reference databases
-- **🔄 Circular Detection**: Enhanced analysis for circular contigs and plasmids
-- **📊 Comprehensive Reporting**: Detailed results with confidence scores and validation
-- **🛠️ Tool Integration**: Seamless integration with BLAST, Mash, Nucmer, and read mapping tools
+- ** Smart Plasmid Discovery**: Combined scoring combining BLAST, Mash, synteny, and read coverage analysis
+- ** Database Management**: Create and manage custom plasmid reference databases
+- ** Circular Detection**: Enhanced analysis for circular contigs and plasmids
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Installation
 
@@ -31,13 +28,13 @@ pip install -e .
 
 ```bash
 # Basic plasmid discovery
-accio find assembly.fasta -d /path/to/databases -o results
+accio find assembly.fasta -d /path/to/database -o results
 
 # With read data for enhanced accuracy
-accio find assembly.fasta -r reads_R1.fastq reads_R2.fastq -d databases -o results
+accio find assembly.fasta -r reads_R1.fastq reads_R2.fastq -d database -o results
 
 # Long read analysis with minimap2
-accio find assembly.fasta -r nanopore.fastq --minimap2 -d databases -o results
+accio find assembly.fasta -r nanopore.fastq --minimap2 -d database -o results
 ```
 
 ### Create Custom Database
@@ -53,7 +50,7 @@ accio create plasmids.fasta -o my_database --metadata plasmid_info.csv
 accio create /path/to/plasmid_fastas/ -o my_database --recursive
 ```
 
-## 📋 Commands
+##  Commands
 
 ### `accio find` - Plasmid Discovery and Assignment
 
@@ -96,10 +93,9 @@ accio create <input> -o <database_dir> [options]
 **Key Options:**
 - `--metadata`: CSV file with plasmid metadata
 - `--recursive`: Search directories recursively for FASTA files
-- `--deduplicate`: Remove duplicate sequences
-- `--cluster_threshold`: Mash similarity for clustering (default: 0.95)
 - `--min_length`: Minimum sequence length (default: 1000)
 - `--check_circular`: Detect circular sequences
+-`--no_clustering`: Skip clustering step (skani) (false by default)
 
 **Examples:**
 ```bash
@@ -128,7 +124,7 @@ accio check --databases /path/to/database
 accio check --all --databases /path/to/database
 ```
 
-## 📁 Output Files
+##  Output Files
 
 ### Plasmid Discovery (`accio find`)
 
@@ -145,7 +141,7 @@ accio check --all --databases /path/to/database
 - **`plasmidDB.fasta.msh`**: Mash sketch database
 - **`database_stats.txt`**: Database statistics and summary
 
-## 🔧 Prerequisites
+##  Prerequisites
 
 ### Required External Tools
 - **BLAST+** (blastn, makeblastdb)
@@ -154,28 +150,12 @@ accio check --all --databases /path/to/database
 - **SAMtools** (samtools)
 - **BWA** or **minimap2** (for read mapping)
 - **MOB-suite** (plasmid analysis)
+- **PLASme** (ML-based plasmid prediction)
 
-
-### Optional Tools
-- **PLASMe** (ML-based plasmid prediction)
 
 Install tools via conda:
 ```bash
 conda install -c bioconda blast mash mummer samtools bwa minimap2
-```
-
-### Database Requirements
-
-Accio requires several reference databases:
-
-```
-database_dir/
-├── plasmidDB.fasta          # Reference plasmid sequences
-├── plasmidDB_info.csv       # Plasmid metadata
-├── plasmidDB.*              # BLAST database files  
-├── plasmidDB.fasta.msh      # Mash sketch
-├── PlasmidFinder/           # PlasmidFinder database
-└── repetitive_elements.fasta # Repetitive elements
 ```
 
 ## 🧬 Algorithm Overview
@@ -191,7 +171,7 @@ database_dir/
 - **Coverage**: Depth and copy number estimation
 - **Gap Analysis**: Coverage of alignment gaps
 
-### 3. Multi-Modal Scoring
+### 3. Scoring Scoring
 Combines multiple evidence types:
 - BLAST similarity (identity × coverage)
 - Mash k-mer similarity
@@ -205,7 +185,7 @@ Combines multiple evidence types:
 - **Cluster Awareness**: Avoids assigning multiple plasmids from same cluster
 - **Biological Validation**: Ensures assignments make biological sense
 
-## 🐍 Python API
+##  Python API
 
 ```python
 from accio import AccioWorkflow, get_config
@@ -265,48 +245,9 @@ config.MIN_PLASMID_SCORE = 0.80 # Assignment score threshold
 config.MIN_MASH_SCORE = 0.90    # Mash similarity threshold
 ```
 
-## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md).
 
-### Development Setup
-```bash
-git clone https://github.com/yourusername/accio.git
-cd accio
-pip install -e ".[dev]"
-pytest tests/
-```
-
-## 📚 Citation
-
-If you use Accio in your research, please cite:
-
-```bibtex
-@software{accio_plasmid_tool,
-  title = {Accio: Multi-modal plasmid identification and assignment},
-  author = {Your Name},
-  url = {https://github.com/yourusername/accio},
-  year = {2025}
-}
-```
-
-## 📜 License
+##  License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🆘 Support & Help
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/accio/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/accio/discussions)
-- **Documentation**: [Wiki](https://github.com/yourusername/accio/wiki)
-
-## 🏆 Acknowledgments
-
-- BLAST+ team for sequence alignment tools
-- Mash developers for rapid similarity screening
-- MUMmer team for synteny analysis tools
-- BioPython community for sequence handling utilities
-
----
-
-*🪄 "The magic is not in the wand, but in the algorithm that wields it."*
