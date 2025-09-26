@@ -1,15 +1,21 @@
 # 🪄 Accio - Plasmid Analysis Tool
- An Assembly-Based Tool Enabling Plasmid Detection for Hospital Epidemiology 
+## (Assembly-based Circular Contig Identification for Outbreaks) 
+An Assembly-Based Tool Enabling Plasmid Detection for Hospital Epidemiology 
 
 > *"Accio plasmids!"* - Summon plasmids from bacterial genome assemblies
 
-A bioinformatics tool for assessing the plasmid content of clinical bacterial isolates using input genome assemblies (short-, long-, or hybrid assemblies).
+A bioinformatics tool for assessing the plasmid content of clinical bacterial isolates using input genome assemblies (short-, long-, or hybrid assemblies) using a custom plasmid database.
 
 ##  Features
 
-- ** Plasmid Discovery**: Combined scoring combining BLAST, Mash, synteny, and read coverage analysis
-- ** Database Management**: Create and manage custom plasmid reference databases
-- ** Circular Detection**: Enhanced analysis for circular contigs and plasmids
+- Plasmid Discovery : Combined scoring combining BLAST, Mash, synteny, and read coverage analysis
+- - assign plasmids to contigs in a genome assembly
+
+- Database: Create and manage custom plasmid reference databases
+- - Check sequences for replicons and circularity
+- - Cluster plasmid sequences using SKANI
+- - Group plasmids using Pling
+- - Create BLAST, MASH databases with representative plasmid sequences
 
 ##  Quick Start
 
@@ -249,3 +255,6 @@ config.MIN_MASH_SCORE = 0.90    # Mash similarity threshold
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+---
+
+_“The truth." Dumbledore sighed. "It is a beautiful and terrible thing—and should therefore be treated with great caution.”—Harry Potter and the Sorcerer's Stone._
