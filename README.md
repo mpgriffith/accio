@@ -1,12 +1,13 @@
 # 🪄 Accio - Plasmid Analysis Tool
+ An Assembly-Based Tool Enabling Plasmid Detection for Hospital Epidemiology 
 
-> *"Accio plasmids!"* - Summon plasmids from bacterial genome assemblies with magical precision.
+> *"Accio plasmids!"* - Summon plasmids from bacterial genome assemblies
 
-A comprehensive Python package for identifying, analyzing, and assigning plasmids in bacterial genome assemblies using multi-modal similarity scoring and intelligent assignment algorithms.
+A bioinformatics tool for assessing the plasmid content of clinical bacterial isolates using input genome assemblies (short-, long-, or hybrid assemblies).
 
 ##  Features
 
-- ** Smart Plasmid Discovery**: Combined scoring combining BLAST, Mash, synteny, and read coverage analysis
+- ** Plasmid Discovery**: Combined scoring combining BLAST, Mash, synteny, and read coverage analysis
 - ** Database Management**: Create and manage custom plasmid reference databases
 - ** Circular Detection**: Enhanced analysis for circular contigs and plasmids
 
@@ -15,8 +16,6 @@ A comprehensive Python package for identifying, analyzing, and assigning plasmid
 ### Installation
 
 ```bash
-# From PyPI (recommended)
-pip install accio-plasmids
 
 # From source
 git clone https://github.com/yourusername/accio.git
@@ -95,7 +94,7 @@ accio create <input> -o <database_dir> [options]
 - `--recursive`: Search directories recursively for FASTA files
 - `--min_length`: Minimum sequence length (default: 1000)
 - `--check_circular`: Detect circular sequences
--`--no_clustering`: Skip clustering step (skani) (false by default)
+- `--no_clustering`: Skip clustering step (skani) (false by default)
 
 **Examples:**
 ```bash
@@ -179,11 +178,10 @@ Combines multiple evidence types:
 - Length compatibility
 - Read coverage support
 
-### 4. Intelligent Assignment
-- **Greedy Algorithm**: Assigns highest-scoring plasmids first
-- **Conflict Resolution**: Prevents duplicate assignments
-- **Cluster Awareness**: Avoids assigning multiple plasmids from same cluster
-- **Biological Validation**: Ensures assignments make biological sense
+### 4. Assignment of Plasmids
+-  Assigns highest-scoring plasmids first
+- allows for repetitive contigs to match to multiple plasmids/multiple regions on a plasmid
+
 
 ##  Python API
 
