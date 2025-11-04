@@ -385,7 +385,8 @@ class PlasmidAnalysisWorkflow:
     def _process_plasmids(self, contigs: Dict[str, Contig], 
                          plasmids: Dict[str, Plasmid],
                          blast_results: Dict[str, pd.DataFrame],
-                         coverage_results: Optional[Dict[str, Any]]) -> List[str]:
+                         coverage_results: Optional[Dict[str, Any]],
+                         mash_data: Optional[pd.DataFrame] = None) -> List[str]:
         """Process plasmids and filter by replicon types."""
         
         # Get replicon types found in sample
@@ -430,14 +431,18 @@ class PlasmidAnalysisWorkflow:
                     plasmid_hits = blast_data[blast_data['sseqid'] == pid]
                     if not plasmid_hits.empty:
                         plasmid_matches.add(pid)
-                        # This is the ideal place: the plasmid is a candidate and has BLAST hits.
                         if plasmid_bam_handle:
                             plasmid.add_read_data(
                                 mash_data=pd.DataFrame(), # Mash data is added later in the plasmid's methods
                                 cov_data=plasmid_bam_handle,
                                 median_depth=coverage_results.get('median_coverage')
                             )
-                        
+                mash_data = blast_results.get('mash', pd.DataFrame())
+                mash_data = mash_data[mash_data['sseqid'] == pid]
+                if not mash_data.empty:
+                    mash_data = mash_data[mash_data['sseqid'] == pid]
+                    if not mash_data.empty:
+                        plasmid.add_mash_data(mash_data[mash_data['sseqid'] == pid])
         # Update plasmids dict
         plasmids.clear()
         plasmids.update(filtered_plasmids)

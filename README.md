@@ -156,11 +156,12 @@ accio check --all --databases /path/to/database
 - **BWA** or **minimap2** (for read mapping)
 - **MOB-suite** (plasmid analysis)
 - **PLASme** (ML-based plasmid prediction)
+- **skani** (ANI calculation for clustering plasmids)
 
 
 Install tools via conda:
 ```bash
-conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite
+conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite skani
 ```
 
 ## 🧬 Algorithm Overview

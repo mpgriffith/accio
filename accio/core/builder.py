@@ -699,6 +699,9 @@ class DatabaseBuilder:
             rep_types_found.update(clean_types)
         if '-' in rep_types_found:
             rep_types_found.remove('-')
+        # remove rep types not in plasmidfinder db
+        if 'rep' in rep_types_found:
+            rep_types_found.remove('rep')
         self.logger.debug(f"Found rep types: {rep_types_found}")
         return ','.join(rep_types_found)
 
@@ -839,7 +842,7 @@ class DatabaseBuilder:
         """Build Mash database."""
         fasta_path = os.path.join(output_dir, "plasmidDB.fasta")
         
-        self.mash_runner.run_sketch(fasta_path, fasta_path)
+        self.mash_runner.run_sketch(fasta_path, fasta_path, multi=True)
         self.logger.info('Mash database created successfully')
         
     
