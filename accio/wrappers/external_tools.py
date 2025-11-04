@@ -525,42 +525,45 @@ class AMRRunner:
         except subprocess.CalledProcessError as e:
             raise ExternalToolError(f"AMRFinder failed: {str(e)}")
 
-def check_tool_availability() -> Dict[str, bool]:
+def check_tool_availability() -> Dict[str, Dict[str, Any]]:
     """
     Check availability of external tools.
     
     Returns:
-        Dictionary mapping tool names to availability status
+        Dictionary mapping tool names to their status and installation hints.
     """
     tools = {
-        'blastn': 'blastn -version',
-        'mash': 'mash --version',
-        'nucmer': 'nucmer --version',
-        'show-coords': 'show-coords -h',
-        'show-snps': 'show-snps -h',
-        'delta-filter': 'delta-filter -h',
-        'bwa': 'bwa',
-        'bwa-mem2': 'bwa',
-        'minimap2': 'minimap2 --version',
-        'samtools': 'samtools --version',
-        'PLASMe.py': 'PLASMe.py --help',
-        'mob_recon': 'mob_recon --version',
-        'makeblastdb': 'makeblastdb -h',
-        
+        'blastn': {'cmd': 'blastn -version', 'install': 'conda install -c bioconda blast'},
+        'mash': {'cmd': 'mash --version', 'install': 'conda install -c bioconda mash'},
+        'nucmer': {'cmd': 'nucmer --version', 'install': 'conda install -c bioconda mummer'},
+        'show-coords': {'cmd': 'show-coords -h', 'install': 'conda install -c bioconda mummer'},
+        'show-snps': {'cmd': 'show-snps -h', 'install': 'conda install -c bioconda mummer'},
+        'delta-filter': {'cmd': 'delta-filter -h', 'install': 'conda install -c bioconda mummer'},
+        'bwa': {'cmd': 'bwa', 'install': 'conda install -c bioconda bwa'},
+        'bwa-mem2': {'cmd': 'bwa-mem2', 'install': 'conda install -c bioconda bwa-mem2'},
+        'minimap2': {'cmd': 'minimap2 --version', 'install': 'conda install -c bioconda minimap2'},
+        'samtools': {'cmd': 'samtools --version', 'install': 'conda install -c bioconda samtools'},
+        'PLASMe.py': {'cmd': 'PLASMe.py --help', 'install': 'See PLASMe GitHub for installation instructions.'},
+        'mob_recon': {'cmd': 'mob_recon --version', 'install': 'pip install mob-suite'},
+        'makeblastdb': {'cmd': 'makeblastdb -h', 'install': 'conda install -c bioconda blast'},
     }
     
     availability = {}
     
-    for tool, cmd in tools.items():
+    for tool, info in tools.items():
+        availability[tool] = {
+            'available': False,
+            'install_hint': info['install']
+        }
         try:
             subprocess.check_output(
-                shlex.split(cmd), 
+                shlex.split(info['cmd']), 
                 stderr=subprocess.DEVNULL,
                 timeout=10
             )
-            availability[tool] = True
+            availability[tool]['available'] = True
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            availability[tool] = False
+            pass
             
     return availability
 

@@ -160,7 +160,7 @@ accio check --all --databases /path/to/database
 
 Install tools via conda:
 ```bash
-conda install -c bioconda blast mash mummer samtools bwa minimap2
+conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite
 ```
 
 ## 🧬 Algorithm Overview

@@ -605,18 +605,21 @@ def handle_check_command(args: argparse.Namespace) -> int:
         
         # Group tools by category
         essential_tools = ['blastn', 'makeblastdb', 'mash', 'nucmer', 'show-coords', 'samtools']
-        mapping_tools = ['bwa', 'bwa-mem2', 'minimap2']
-        optional_tools = ['plasme', 'mob_recon']
+        mapping_tools = ['bwa', 'minimap2'] # bwa-mem2 is often separate
+        optional_tools = ['PLASMe.py', 'mob_recon', 'bwa-mem2']
         
         def check_tool_group(tools: List[str], group_name: str) -> bool:
             print(f"\n  {group_name}:")
             all_available = True
             for tool in tools:
-                available = tool_availability.get(tool, False)
-                status = "✅" if available else "❌"
-                print(f"    {status} {tool}")
-                if not available and tool in essential_tools:
-                    all_available = False
+                info = tool_availability.get(tool)
+                if info:
+                    status = "✅" if info['available'] else "❌"
+                    print(f"    {status} {tool}")
+                    if not info['available']:
+                        print(f"       └─ Install with: {info['install_hint']}")
+                        if tool in essential_tools:
+                            all_available = False
             return all_available
         
         essential_ok = check_tool_group(essential_tools, "Essential tools")

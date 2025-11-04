@@ -1,0 +1,5 @@
+pandas
+biopython
+scipy
+numpy
+intervaltree
