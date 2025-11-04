@@ -157,11 +157,12 @@ accio check --all --databases /path/to/database
 - **MOB-suite** (plasmid analysis)
 - **PLASme** (ML-based plasmid prediction)
 - **skani** (ANI calculation for clustering plasmids)
+- **AMRFinder** 
 
 
 Install tools via conda:
 ```bash
-conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite skani
+conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite skani amrfinder
 ```
 
 ## 🧬 Algorithm Overview
