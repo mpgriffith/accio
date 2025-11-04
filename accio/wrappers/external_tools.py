@@ -323,8 +323,9 @@ class ReadMappingRunner:
         try:
             if not use_minimap:
                 # Index reference with BWA
-                # index_cmd = ['bwa', 'index', reference]
-                # subprocess.check_call(index_cmd)
+                if not os.path.isfile(f'{reference}.bwt'):
+                    index_cmd = ['bwa', 'index', reference]
+                    subprocess.check_call(index_cmd)
                 
                 # # Map with BWA MEM
                 map_cmd = ['bwa', 'mem', '-t', str(self.config.THREADS), reference] + reads
@@ -491,7 +492,38 @@ class SkaniRunner:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             raise ExternalToolError(f"MOB-typer failed: {str(e)}")
-                    
+                
+class AMRRunner:
+    """Wrapper for AMRFinder operations."""
+    
+    def __init__(self, config: Optional[AnalysisConfig] = None):
+        self.config = config or AnalysisConfig()
+        
+    def run_amrfinder(self, input_fasta: str, output_file: str) -> str:
+        """
+        Run AMRFinder for antimicrobial resistance gene identification.
+        
+        Args:
+            input_fasta: Path to input FASTA file
+            output_file: Output file path
+            
+        Returns:
+            Path to output file
+            
+        Raises:
+            ExternalToolError: If AMRFinder execution fails
+        """
+        cmd = [
+            'amrfinder', '-n', input_fasta,
+            '-o', output_file,
+            '--threads', str(self.config.THREADS)
+        ]
+        
+        try:
+            subprocess.check_call(cmd)
+            return output_file
+        except subprocess.CalledProcessError as e:
+            raise ExternalToolError(f"AMRFinder failed: {str(e)}")
 
 def check_tool_availability() -> Dict[str, bool]:
     """

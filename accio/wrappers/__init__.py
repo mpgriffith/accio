@@ -2,7 +2,7 @@
 
 from .external_tools import (
     BLASTRunner, MashRunner, NucmerRunner, PLASMeRunner,
-    ReadMappingRunner, MOBRunner, ExternalToolError, SkaniRunner,
+    ReadMappingRunner, MOBRunner, ExternalToolError, SkaniRunner, AMRRunner,
     check_tool_availability, validate_databases
 )
 from .pling import PlingRunner
@@ -15,6 +15,7 @@ __all__ = [
     'MOBRunner',
     'PlingRunner',
     'SkaniRunner',
+    'AMRRunner',
     'ExternalToolError',
     'check_tool_availability',
     'validate_databases'

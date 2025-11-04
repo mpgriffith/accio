@@ -20,7 +20,8 @@ class Plasmid:
     """Represents a reference plasmid with scoring and assignment capabilities."""
     
     def __init__(self, id: str, cluster_id: str, pling_type: str, length: int, plasmid_mash_db: str,
-                 other: Optional[Dict[str, Any]] = None, rep_type: Optional[str] = None):
+                 other: Optional[Dict[str, Any]] = None, rep_type: Optional[str] = None,
+                 amr_genes: Optional[str] = None):
         """
         Initialize a Plasmid object.
         
@@ -38,6 +39,7 @@ class Plasmid:
         self.length = int(length)
         self.plasmid_db_mash = plasmid_mash_db
         self.rep_type = rep_type
+        self.amr_genes = amr_genes
         self.other = other or {}
         
         # Scoring attributes
@@ -712,6 +714,7 @@ class Plasmid:
             'cluster_id': self.cluster_id,
             'length': self.length,
             'rep_type': self.rep_type,
+            'amr_genes': self.amr_genes,
             'num_contigs': len(self.contigs),
             'contig_ids': list(self.contigs.keys()),
             'final_score': self.score,

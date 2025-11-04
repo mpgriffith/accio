@@ -82,7 +82,7 @@ class AnalysisConfig:
     # Assignment thresholds
     MIN_BLAST_SIMILARITY = 85
     MIN_PLASMID_SCORE = 0.80
-    MIN_MASH_SCORE = 0.990
+    MIN_MASH_SCORE = 0.995
     
     # Use Pling community counts for choosing best plasmid
     USE_PLING_COMMUNITY_COUNTS = False

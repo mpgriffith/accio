@@ -14,7 +14,8 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
-from ..wrappers import (BLASTRunner, MashRunner, MOBRunner, PlingRunner, SkaniRunner)
+import accio
+from ..wrappers import (BLASTRunner, MashRunner, MOBRunner, PlingRunner, SkaniRunner, AMRRunner)
 from ..config import MOB_TYPER_COLS
 
 
@@ -106,9 +107,10 @@ class DatabaseBuilder:
         
         if not update_existing:
             self.download_plasmidfinder(output_dir)
+            self.download_repetitive_db(output_dir)
 
         # Type sequences and filter for plasmids
-        plasmids, mob_df, plasmidfinder_results, mob_typer_file = self._type_and_filter_sequences(
+        plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results = self._type_and_filter_sequences(
             sequences, output_path, use_all
         )
 
@@ -124,7 +126,7 @@ class DatabaseBuilder:
         
         # Process and merge metadata from all sources
         metadata_df = self._process_metadata(metadata_file, existing_metadata, sequences.keys())
-        metadata_df = self._merge_cluster_info(metadata_df, cluster_info, mob_df, plasmidfinder_results)
+        metadata_df = self._merge_cluster_info(metadata_df, cluster_info, mob_df, plasmidfinder_results, amrfinder_results)
         self.logger.info("\n" + metadata_df.head().to_string())
         metadata_df.to_csv(output_dir + '/plasmid_db_before_pling.csv')
         metadata_df = self._create_plasmid_communities(rep_plasmids, metadata_df, output_dir)
@@ -170,30 +172,84 @@ class DatabaseBuilder:
             metadata = pd.read_csv(metadata_path)
         
         return sequences, metadata
-    
-    def download_plasmidfinder(self, output_dir):
-        plasmidfinder_dir = Path(output_dir) / "plasmidfinder_db"
-        plasmidfinder_dir.mkdir(exist_ok=True)
-        plasmidfinder_fasta = Path(output_dir) / 'PlasmidFinder.fasta'
-        plasmidfinder_db_path = Path(output_dir) / 'PlasmidFinder'
-        self.logger.info("Downloading PlasmidFinder database...")
-        try:
-            # Clone the PlasmidFinder repository
-            clone_cmd = ['git', 'clone', 'https://bitbucket.org/genomicepidemiology/plasmidfinder_db.git', str(plasmidfinder_dir)]
-            clone_cmd = subprocess.run(clone_cmd, check=True, capture_output=True)
-            fastas = list(plasmidfinder_dir.glob('*.fsa'))
-            with plasmidfinder_fasta.open("w") as outfile:
-                for file_path in fastas:
-                    with file_path.open("r") as infile:
-                        for line in infile:
-                            outfile.write(line)
-            self.blast_runner.run_makeblastdb(str(plasmidfinder_fasta), str(plasmidfinder_db_path))
-            # Clean up
-            shutil.rmtree(plasmidfinder_dir)
-            self.logger.info("PlasmidFinder database downloaded and set up successfully.")
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Failed to download or set up PlasmidFinder database: {e.stderr.decode()}")
-            raise
+
+    def download_repetitive_db(self, target_output_dir: Path):
+        """
+        Downloads/creates the repetitive element database directly into the target
+        plasmid database directory and builds its BLAST database.
+        """
+        self.logger.info(f"Ensuring repetitive element database is available in {target_output_dir}...")
+        target_output_dir = Path(target_output_dir) 
+
+        # Path to the bundled repetitive.dna.fas within the installed package
+        package_data_dir = Path(accio.__file__).parent / "data"
+        packaged_rep_fasta = package_data_dir / 'repetitive.dna.fas'
+
+
+        rep_fasta = target_output_dir / 'repetitive.dna.fas'
+        rep_db_prefix = target_output_dir / 'repetitive.dna.fas'
+        
+               # Check if the bundled FASTA file actually exists
+        if not packaged_rep_fasta.exists():
+            self.logger.error(f"Bundled repetitive.dna.fas not found at {packaged_rep_fasta}. Please ensure it's included in the package data.")
+            raise FileNotFoundError(f"Bundled repetitive.dna.fas not found.")
+
+
+        # Check if repetitive DB exists in the target directory
+        if not rep_fasta.exists() or not (rep_db_prefix.with_suffix('.nhr')).exists():
+            self.logger.info("Repetitive element BLAST database not found in target directory. Building now...")
+            
+            shutil.copy(packaged_rep_fasta, rep_fasta)
+            self.logger.info(f"Copied repetitive.dna.fas from package to {rep_fasta}")
+
+            self.blast_runner.run_makeblastdb(str(rep_fasta), str(rep_db_prefix))
+            self.logger.info(f"Repetitive element BLAST database built in: {target_output_dir}")
+        else:
+            self.logger.info("Repetitive element database found.")
+
+
+    def download_plasmidfinder(self, target_output_dir: Path):
+        """
+        Downloads the PlasmidFinder database directly into the target
+        plasmid database directory and builds its BLAST database.
+        """
+        self.logger.info("Ensuring PlasmidFinder database is available...")
+        target_output_dir = Path(target_output_dir)
+        plasmidfinder_dir = target_output_dir / "plasmidfinder_db"
+        plasmidfinder_fasta = target_output_dir / 'PlasmidFinder.fasta'
+        plasmidfinder_db_path = target_output_dir / 'PlasmidFinder'
+
+        # Check if PlasmidFinder DB exists in the target directory
+        if not plasmidfinder_fasta.exists() or not (plasmidfinder_db_path.with_suffix('.nhr')).exists():
+            self.logger.info("PlasmidFinder database not found. Downloading and building...")
+
+            # Ensure the temporary clone directory exists
+            plasmidfinder_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                # Clone the PlasmidFinder repository
+                clone_cmd = ['git', 'clone', 'https://bitbucket.org/genomicepidemiology/plasmidfinder_db.git', str(plasmidfinder_dir)]
+                subprocess.run(clone_cmd, check=True, capture_output=True)
+
+                # Combine individual FASTA files into a single FASTA file
+                fastas = list(plasmidfinder_dir.glob('*.fsa'))
+                with open(plasmidfinder_fasta, "w") as outfile:
+                    for file_path in fastas:
+                        with open(file_path, "r") as infile:
+                            for line in infile:
+                                outfile.write(line)
+
+                # Build BLAST database
+                self.blast_runner.run_makeblastdb(str(plasmidfinder_fasta), str(plasmidfinder_db_path))
+                # Clean up the cloned repository
+                shutil.rmtree(plasmidfinder_dir)
+                self.logger.info("PlasmidFinder database downloaded and set up successfully.")
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Failed to download or set up PlasmidFinder database: {e.stderr.decode()}")
+                raise
+        else:
+            self.logger.info("PlasmidFinder database found.")
+
 
     def _type_and_filter_sequences(self, sequences: Dict[str, SeqRecord], output_path: Path, use_all: bool):
         """Run typing tools and filter sequences to identify plasmids."""
@@ -206,10 +262,11 @@ class DatabaseBuilder:
         
         # Run PlasmidFinder on all sequences
         plasmidfinder_results, _ = self._run_plasmidfinder(all_seqs_file, str(output_path))
+        amrfinder_results = self._run_amrfinder(all_seqs_file, output_path)
 
         # Filter for sequences that are likely plasmids
         plasmids = self._filter_plasmids(sequences, mob_df, plasmidfinder_results, use_all)
-        return plasmids, mob_df, plasmidfinder_results, mob_typer_file
+        return plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results
     
     def _run_plasmidfinder(self, sequence_file: str, output_dir: str) -> pd.DataFrame:
         """Run PlasmidFinder on sequences."""
@@ -231,6 +288,13 @@ class DatabaseBuilder:
         results_file = mob_runner.run_mob_typer(sequence_file, str(output_dir / 'mob_typer_results.tsv'), multi=True)
         mob_df = pd.read_csv(results_file, sep='\t')
         return mob_df, results_file
+    
+    def _run_amrfinder(self, sequence_file: str, output_dir: Path) -> pd.DataFrame:
+        """Run AMRFinder on sequences."""
+        amrfinder_runner = AMRRunner()
+        self.logger.info("Running AMRFinder...")
+        results_file = amrfinder_runner.run_amrfinder(sequence_file, str(output_dir / 'amrfinder_results.tsv')) 
+        return pd.read_csv(results_file, sep='\t')
 
     def _filter_plasmids(self, sequences: Dict[str, SeqRecord], mob_results: pd.DataFrame,
                        plasmidfinder_results: pd.DataFrame,
@@ -641,7 +705,8 @@ class DatabaseBuilder:
     def _merge_cluster_info(self, metadata_df: pd.DataFrame, 
                            cluster_info: pd.DataFrame,
                            mob_df: pd.DataFrame,
-                           plasmidfinder_results: pd.DataFrame) -> pd.DataFrame:
+                           plasmidfinder_results: pd.DataFrame,
+                           amrfinder_results: pd.DataFrame) -> pd.DataFrame:
         """Merge clustering information with metadata."""
         metadata_df = metadata_df.set_index('plasmid_id')
 
@@ -661,6 +726,7 @@ class DatabaseBuilder:
         self.logger.debug("\n" + metadata_df.head().to_string())
 
         metadata_df['rep_types'] = metadata_df.apply(lambda r: self._combine_rep_types([r['rep_type(s)'], r['plasmidfinder_reps']]), axis=1)
+        metadata_df['amr_genes'] = metadata_df.index.map(lambda s: ','.join(amrfinder_results[amrfinder_results['Contig id'] == s]['Element symbol'].unique()))
         metadata_df = metadata_df.drop(columns=[c for c in metadata_df.columns if '_x' in c])
         metadata_df['sample_id'] = metadata_df.index
 
@@ -738,7 +804,7 @@ class DatabaseBuilder:
         fasta_path_file = Path(output_dir) / 'pling_fasta_paths.txt'
         with open(fasta_path_file, 'w') as f:
             f.write('\n'.join([str(fasta_dir / f'{seq.id}.fasta') for seq in sequences]))
-        pling_runner.run_pling(str(fasta_path_file), pling_dir, pling_args='--containment_distance 0.03')
+        pling_runner.run_pling(str(fasta_path_file), pling_dir, pling_args='--containment_distance 0.3')
         new_dcj_types_dir = pling_runner.edit_dcj(metadata_df)
         
         # Assuming edit_dcj returns the path to the new typing results directory
@@ -751,7 +817,7 @@ class DatabaseBuilder:
             metadata_df = metadata_df.join(pling_types, how='left')
             metadata_df = metadata_df.join(communities, how='left')
             for i, h in enumerate(hub_plasmids.index):
-                metadata_df.loc[h, 'pling_type'] = communities.loc[h, 'community'] + "_hub{i}"
+                metadata_df.loc[h, 'pling_type'] = communities.loc[h, 'community'] + f"_hub{i}"
 
         return metadata_df
 

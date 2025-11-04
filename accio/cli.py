@@ -4,9 +4,11 @@ import argparse
 import sys
 import os
 import logging
+import glob
+import multiprocessing
 from pathlib import Path
 from typing import Optional, List
-
+import pandas as pd
 from .config import AnalysisConfig, get_config, validate_config
 from .wrappers.external_tools import check_tool_availability, validate_databases
 from .core.workflow import PlasmidAnalysisWorkflow
@@ -347,9 +349,9 @@ def add_check_parser(subparsers) -> None:
 
 def add_collate_parser(subparsers) -> None:
     """Add the 'combine' subcommand parser"""
-    combine_parser = subparsers.add_parser('combine', help='Combine results from multiple genomes')
-    combine_parser.add_argument('accio_results_dirs', nargs='+', help='List of Accio result directories to combine')
-    combine_parser.add_argument('-o', '--output', required=True, help='Output directory for combined results')
+    collate_parser = subparsers.add_parser('collate', help='Combine results from multiple genomes')
+    collate_parser.add_argument('input_pattern', help='Glob pattern for input files (e.g., "results/*/*_plasmids_chosen.csv")')
+    collate_parser.add_argument('-o', '--output', required=True, help='Output file for combined results (e.g., summary.csv)')
 
 def add_query_parser(subparsers) -> None:
     """Add the 'query' subcommand parser"""
@@ -363,10 +365,14 @@ def add_query_parser(subparsers) -> None:
 def add_multi_parser(subparsers) -> None:
     """Add the 'multi' subcommand parser"""
     multi_parser = subparsers.add_parser('multi', help='Find and assign plasmids in many genomes')
-    multi_parser.add_argument('--assemblies', required=True, help="Directory containing FASTA files.")
+    multi_parser.add_argument('--assemblies', nargs='+', required=True, help="Directory containing FASTA files.")
+    multi_parser.add_argument('--reads_dir', help="Directory containing read files.")
     multi_parser.add_argument('-d', '--database', required=True, help="Path to the database directory.")
     multi_parser.add_argument('-o', '--output_dir', required=True, help="Parent directory for all output.")
-    add_find_analyses_parsers(multi_parser)
+    multi_parser.add_argument('--collate', action='store_true', help="Automatically collate results into a summary file.")
+
+    add_find_analyses_parsers(multi_parser) 
+
 
 def handle_find_command(args: argparse.Namespace) -> int:
     """Handle the 'find' subcommand."""
@@ -655,36 +661,100 @@ def handle_check_command(args: argparse.Namespace) -> int:
         
     return exit_code
 
+def handle_query_command(args: argparse.Namespace) -> int:
+    pass
+
+def handle_multi_command(args: argparse.Namespace) -> int:
+    """Handle the 'multi' subcommand to run analysis on multiple samples."""
+    logger = logging.getLogger(__name__)
+    
+    # Find all assembly files
+    assembly_files = args.assemblies
+    if not assembly_files:
+        logger.error(f"No assembly files found in {args.assemblies}")
+        return 1
+
+    logger.info(f"Found {len(assembly_files)} assemblies to process.")
+    logger.info(f"Running up to {args.threads} samples in parallel.")
+    
+    # Create the main output directory
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    jobs_to_run = []
+    for assembly_file in assembly_files:
+        sample_name = Path(assembly_file).stem
+        logger.info(f"--- Processing sample: {sample_name} ---")
+        
+        sample_output_dir = Path(args.output_dir) / sample_name
+        sample_output_dir.mkdir(exist_ok=True)
+
+        # Prepare arguments for the 'find' command for this specific sample
+        job_args = argparse.Namespace(**vars(args))
+        job_args.assembly = assembly_file
+        job_args.output = str(sample_output_dir)
+        job_args.sample_name = sample_name
+
+        # Find corresponding read files if a reads directory is provided
+        if args.reads_dir:
+            # Assumes reads are named like: {sample_name}_R1.fastq.gz, {sample_name}_R2.fastq.gz, etc.
+            read_files = sorted(glob.glob(f"{args.reads_dir}/{sample_name}*"))
+            if read_files:
+                logger.info(f"Found {len(read_files)} read file(s) for {sample_name}")
+                job_args.reads = read_files
+            else:
+                logger.warning(f"No read files found for {sample_name} in {args.reads_dir}")
+                job_args.reads = None
+        else:
+            job_args.reads = None
+
+        jobs_to_run.append(job_args)
+    num_parallel = int(args.threads / 8) if args.threads >=8 else 1
+    # Run jobs in parallel
+    with multiprocessing.Pool(processes=num_parallel) as pool:
+        pool.map(handle_find_command, jobs_to_run)
+    
+    logger.info("--- Multi-analysis complete! ---")    
+    # Automatically collate results if requested
+    if args.collate:
+        logger.info("Collating results...")
+        collate_pattern = f"{args.output_dir}/*/{Path(FilePatterns.PLASMID_DATA_OUTPUT).name.format(sample='*')}"
+        collate_output = Path(args.output_dir) / "summary_report.csv"
+        
+        collate_args = argparse.Namespace(
+            input_pattern=collate_pattern,
+            output=str(collate_output)
+        )
+        handle_combine_command(collate_args)
+    else:
+        logger.info(f"To combine all results into a single summary, run: accio collate '{args.output_dir}/*/{Path(FilePatterns.PLASMID_DATA_OUTPUT).name.format(sample='*')}' -o {args.output_dir}/summary_report.csv")
+    return 0
+
 def handle_combine_command(args: argparse.Namespace) -> int:
     """Collates results from an 'accio multi' run."""
-    
-    results_files = glob.glob(f"{args.multi_results_dir}/{args.pattern}", recursive=True)
+    logger = logging.getLogger(__name__)
+    results_files = glob.glob(args.input_pattern, recursive=True)
     
     all_dfs = []
     for f in results_files:
         try:
             df = pd.read_csv(f)
-            # Infer sample name from the directory structure
-            # sample_name = f.split(os.sep)[-2]
-            # df['sample'] = sample_name
+            sample_name = f.split(os.sep)[-1].split('_')[0]
+            df['sample'] = sample_name
+
             all_dfs.append(df)
         except pd.errors.EmptyDataError:
-            print(f"Warning: Skipping empty file {f}")
+            logger.warning(f"Skipping empty file {f}")
             continue
             
     if not all_dfs:
-        print("No result files found to collate.")
-        return
+        logger.warning("No result files found to collate.")
+        return 1
 
     summary_df = pd.concat(all_dfs, ignore_index=True)
     summary_df.to_csv(args.output, index=False)
-    print(f"Summary report written to {args.output}")
+    logger.info(f"Summary report written to {args.output}")
+    return 0
 
-def handle_query_command(args: argparse.Namespace) -> int:
-    pass
-
-def handle_multi_command(args: argparse.Namespace) -> int:
-    pass
 
 def main() -> int:
     """Main entry point for Accio CLI."""
@@ -713,7 +783,7 @@ def main() -> int:
             return handle_create_command(args)
         elif args.command == 'check':
             return handle_check_command(args)
-        elif args.command == 'combine':
+        elif args.command == 'collate':
             return handle_combine_command(args)
         elif args.command == 'query':
             return handle_query_command(args)

@@ -24,7 +24,7 @@ A bioinformatics tool for assessing the plasmid content of clinical bacterial is
 ```bash
 
 # From source
-git clone https://github.com/yourusername/accio.git
+git clone https://github.com/mpgriffith/accio.git
 cd accio
 pip install -e .
 ```
@@ -249,7 +249,8 @@ config.MIN_PLASMID_SCORE = 0.80 # Assignment score threshold
 config.MIN_MASH_SCORE = 0.90    # Mash similarity threshold
 ```
 
-
+## Citation
+ACCIO is currently available as a preprint, please cite: [Nathan J. Raabe, Marissa P. Griffith, Vatsala Rangachar Srinivasa, Kady D. Waggle, Alexander J. Sundermann, Lora Lee Pless, Graham M. Snyder, Maria M. Brooks, Daria Van Tyne, Lee H. Harrison. 2025. ACCIO: An Assembly-Based Tool Enabling Plasmid Detection. medRxiv doi: https://doi.org/10.1101/2025.10.30.25338662](https://www.medrxiv.org/content/10.1101/2025.10.30.25338662).
 
 ##  License
 

@@ -45,9 +45,9 @@ class PlingRunner:
     def get_dcj_dist_by_length(self, row: pd.Series, threshold: float =.05, min_len: float = 120000, dcj_threshold: int = None):
         min_length = min(row['length1'], row['length2'])
         dcj_dist = row['distance_y'] / (min_length / 1000)
-        if min_length < min_len and row['distance_y'] <= dcj_threshold and dcj_dist > threshold:
+        if min_length <= min_len and row['distance_y'] <= dcj_threshold and dcj_dist > threshold:
             dcj_dist = threshold - .01
-        if min_length < min_len and row['distance_y'] > dcj_threshold and dcj_dist < threshold:
+        if min_length <= min_len and row['distance_y'] > dcj_threshold and dcj_dist < threshold:
             dcj_dist = threshold + .01
         return dcj_dist
 

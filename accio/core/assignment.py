@@ -202,10 +202,10 @@ def _select_best_plasmid(plasmids_to_process: List[str],
 
 def _meets_assignment_criteria(plasmid: Plasmid, config: AnalysisConfig) -> bool:
     """Check if plasmid meets criteria for assignment."""
-
+    pass_mash_score = plasmid.mash_score >= config.MIN_MASH_SCORE
     return (
         plasmid.scores['blast_similarity'] >= config.MIN_BLAST_SIMILARITY and
-        plasmid.scores['mash_score']>= config.MIN_MASH_SCORE 
+        pass_mash_score
     )
 
 

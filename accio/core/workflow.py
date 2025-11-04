@@ -5,6 +5,8 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from Bio import SeqIO
+import pysam
+
 
 from ..config import AnalysisConfig, MAX_PLASMID_LENGTH, FilePatterns
 from ..wrappers.external_tools import (
@@ -93,11 +95,17 @@ class PlasmidAnalysisWorkflow:
         
         # Process plasmids with analysis results
         self.logger.info("Processing plasmid analysis results")
-        plasmid_matches = self._process_plasmids(contigs, plasmids, blast_results)
-        
+        plasmid_matches = self._process_plasmids(contigs, plasmids, blast_results, coverage_results=coverage_data)
+        if self.logger.isEnabledFor(logging.DEBUG):
+            initial_plasmid_data = []
+            for pid, p in plasmids.items():
+                summary = p.get_summary()
+                initial_plasmid_data.append(summary)
+            pd.DataFrame(initial_plasmid_data).to_csv(Path(output_dir) / f'{sample_name}_initial_plasmid_data.csv')
+
         # Assign contigs to plasmids
         self.logger.info("Assigning contigs to plasmids")
-        assignment_results = self._assign_plasmids(contigs, plasmids)
+        assignment_results = self._assign_plasmids(contigs, plasmids, output_dir, sample_name)
         
         # Handle novel plasmid contigs
         self.logger.info("Processing novel plasmid contigs")
@@ -376,7 +384,8 @@ class PlasmidAnalysisWorkflow:
                     
     def _process_plasmids(self, contigs: Dict[str, Contig], 
                          plasmids: Dict[str, Plasmid],
-                         blast_results: Dict[str, pd.DataFrame]) -> List[str]:
+                         blast_results: Dict[str, pd.DataFrame],
+                         coverage_results: Optional[Dict[str, Any]]) -> List[str]:
         """Process plasmids and filter by replicon types."""
         
         # Get replicon types found in sample
@@ -393,6 +402,14 @@ class PlasmidAnalysisWorkflow:
         plasmid_matches = set()
         filtered_plasmids = {}
         
+        # Prepare read data once to avoid re-opening the BAM file
+        plasmid_bam_handle = None
+        if coverage_results and 'plasmid_bam' in coverage_results:
+            plasmid_bam_path = Path(coverage_results['plasmid_bam'])
+            # Ensure the BAM file and its index exist before creating a handle
+            if plasmid_bam_path.exists() and Path(f"{plasmid_bam_path}.bai").exists():
+                plasmid_bam_handle = pysam.AlignmentFile(plasmid_bam_path)
+
         for pid, plasmid in plasmids.items():
             # Check if plasmid's replicon types are present in sample
             plasmid_rep_types = [rep_type.split('_')[0].split('(')[0].split('-')[0] for rep_type in plasmid.rep_type.split(',')] if type(plasmid.rep_type) == str else []
@@ -407,13 +424,19 @@ class PlasmidAnalysisWorkflow:
                 
             if has_matching_rep:
                 filtered_plasmids[pid] = plasmid
-                
                 # Check if any contigs match this plasmid
                 blast_data = blast_results['blast']
                 if not blast_data.empty:
                     plasmid_hits = blast_data[blast_data['sseqid'] == pid]
                     if not plasmid_hits.empty:
                         plasmid_matches.add(pid)
+                        # This is the ideal place: the plasmid is a candidate and has BLAST hits.
+                        if plasmid_bam_handle:
+                            plasmid.add_read_data(
+                                mash_data=pd.DataFrame(), # Mash data is added later in the plasmid's methods
+                                cov_data=plasmid_bam_handle,
+                                median_depth=coverage_results.get('median_coverage')
+                            )
                         
         # Update plasmids dict
         plasmids.clear()
@@ -425,7 +448,8 @@ class PlasmidAnalysisWorkflow:
         return list(plasmid_matches)
         
     def _assign_plasmids(self, contigs: Dict[str, Contig], 
-                        plasmids: Dict[str, Plasmid]) -> Dict[str, Any]:
+                        plasmids: Dict[str, Plasmid],
+                        output_dir: str, sample_name: str) -> Dict[str, Any]:
         """Assign contigs to plasmids using the assignment algorithm."""
         
         # Separate circular contigs for priority processing
@@ -434,7 +458,8 @@ class PlasmidAnalysisWorkflow:
         
         all_assigned_plasmids = []
         all_assigned_contigs = {}
-        
+        circ_data = []
+        linear_data = []
         # Process circular contigs first (higher confidence)
         if circular_contigs:
             self.logger.info(f"Processing {len(circular_contigs)} circular contigs")
@@ -460,6 +485,7 @@ class PlasmidAnalysisWorkflow:
                 # Assign best matching plasmid
                 if contig_plasmid_matches:
                     self.logger.debug(f'Circular contig {contig_id} matching to plasmids: {contig_plasmid_matches}')
+                    circ_data.extend([p.get_summary() for p in contig_plasmid_matches.values()])
                     assigned_plasmids, assigned_contigs = assign_plasmids(
                         contig_plasmid_matches, {contig_id: contig}
                     )
@@ -469,6 +495,7 @@ class PlasmidAnalysisWorkflow:
                     
         # Process linear contigs
         if linear_contigs:
+            linear_data = []
             self.logger.info(f"Processing {len(linear_contigs)} linear contigs")
             
             # Add contigs to matching plasmids
@@ -497,14 +524,19 @@ class PlasmidAnalysisWorkflow:
                 pid: p for pid, p in plasmids.items()
                 if pid not in [pl.id for pl in all_assigned_plasmids]
             }
-            
+            for plasmid in remaining_plasmids.values():
+                    summary = plasmid.get_summary()
+                    linear_data.append(summary)
             assigned_plasmids, assigned_contigs = assign_plasmids(
                 remaining_plasmids, remaining_contigs
             )
             
             all_assigned_plasmids.extend(assigned_plasmids)
             all_assigned_contigs.update(assigned_contigs)
-            
+        if self.logger.isEnabledFor(logging.DEBUG):
+            pd.DataFrame(circ_data).to_csv(Path(output_dir) / f'{sample_name}_initial_circular_contig_plasmid_data.csv')
+            pd.DataFrame(linear_data).to_csv(Path(output_dir) / f'{sample_name}_initial_linear_contig_plasmid_data.csv')
+            pd.DataFrame(circ_data + linear_data).to_csv(Path(output_dir) / f'{sample_name}_initial_all_contig_plasmid_data.csv')
         return {
             'plasmids_assigned': all_assigned_plasmids,
             'contigs_assigned': all_assigned_contigs
@@ -538,6 +570,7 @@ class PlasmidAnalysisWorkflow:
             if mob_report_file.exists() and mob_report_file.stat().st_size > 0 and mob_contig_file.exists() and mob_contig_file.stat().st_size > 0:
                 mob_results = pd.read_csv(mob_report_file, sep='\t', on_bad_lines='skip')
                 mob_contigs = pd.read_csv(mob_contig_file, sep='\t')
+                mob_contigs['contig_id'] = mob_contigs['contig_id'].map(lambda x: x.split()[0])  # Clean contig IDs
             else:
                 self.logger.warning("MOB-recon did not produce the expected report files.")
 
@@ -594,9 +627,10 @@ class PlasmidAnalysisWorkflow:
 
         if not mob_results.empty:
             # Group by plasmid ID from MOB-recon
-            for plasmid_id, group in mob_contigs.groupby('sample_id'):
+            mob_plasmid_contigs = mob_contigs[mob_contigs['molecule_type'] == 'plasmid']
+            for plasmid_id, group in mob_plasmid_contigs.groupby('primary_cluster_id'):
                 contig_ids = group['contig_id'].tolist()
-
+                rep_row = mob_results[mob_results['primary_cluster_id'] == plasmid_id].iloc[0]
                 # Find corresponding contig objects
                 plasmid_contigs = [c for c in novel_contigs if c.id in contig_ids]
 
@@ -609,16 +643,17 @@ class PlasmidAnalysisWorkflow:
                         rep_types.update(contig.rep_types)
 
                 # Get data from the first row of the group, assuming it's representative
-                rep_row = group.iloc[0]
+                #rep_row = group.iloc[0]
 
                 novel_entry = {
                     'plasmid_id': plasmid_id,
                     'cluster_id': 'novel',
                     'pling_type': 'novel',
+                    'size': rep_row.get('size', sum(c.length for c in plasmid_contigs)),
                     'length': sum(c.length for c in plasmid_contigs),
                     'num_contigs': len(plasmid_contigs),
                     'contig_ids': [c.id for c in plasmid_contigs],
-                    'rep_types': ','.join(sorted(list(rep_types))),
+                    'rep_type': ','.join(sorted(list(rep_types))),
                     'mob_plasmid_id': rep_row.get('plasmid_id'),
                     'mob_cluster_id': rep_row.get('primary_cluster_id'),
                     'mob_rep_types': rep_row.get('rep_type(s)'),
@@ -626,9 +661,11 @@ class PlasmidAnalysisWorkflow:
                     'mob_mash_dist': rep_row.get('mash_dist'),
                 }
                 plasmid_data.append(novel_entry)
-        novel_unclass_contigs = list(set(novel_contigs) - set(mob_contigs.contig_id.tolist())) if not mob_contigs.empty else set(novel_contigs)
-        if novel_unclass_contigs:
+        novel_unclass_contigs = list(set([c.id for c in novel_contigs]) - set(mob_plasmid_contigs.contig_id.tolist())) if not mob_contigs.empty else set([c.id for c in novel_contigs])
+        if novel_unclass_contigs and len(novel_unclass_contigs) > 0:
             # Fallback if MOB-recon fails but novel contigs are found
+            
+            novel_unclass_contigs = [c for c in novel_contigs if c.id in novel_unclass_contigs]
             novel_entry = {
                 'plasmid_id': 'novel_plasmid_1',
                 'cluster_id': 'novel',
@@ -636,7 +673,7 @@ class PlasmidAnalysisWorkflow:
                 'length': sum(c.length for c in novel_unclass_contigs),
                 'num_contigs': len(novel_unclass_contigs),
                 'contig_ids': [c.id for c in novel_unclass_contigs],
-                'rep_types': ','.join(set(
+                'rep_type': ','.join(set(
                     rep for c in novel_unclass_contigs if c.rep_types
                     for rep in c.rep_types
                 ))
