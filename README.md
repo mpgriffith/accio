@@ -155,7 +155,7 @@ accio check --all --databases /path/to/database
 - **SAMtools** (samtools)
 - **BWA** or **minimap2** (for read mapping)
 - **MOB-suite** (plasmid analysis)
-- **PLASme** (ML-based plasmid prediction)
+- **PLASme** (ML-based plasmid prediction) or **geNomad**
 - **skani** (ANI calculation for clustering plasmids)
 - **AMRFinder** 
 
@@ -171,7 +171,7 @@ conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suit
 - **BLAST**: Identity and coverage against reference databases
 - **Mash**: Rapid k-mer based similarity screening  
 - **Nucmer**: Synteny and structural analysis
-- **PLASMe**: Machine learning-based classification
+- **PLASMe** or **geNomad**: Machine learning-based classification
 
 ### 2. Read Analysis (Optional)
 - **Read Mapping**: BWA or minimap2 alignment

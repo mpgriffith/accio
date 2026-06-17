@@ -223,8 +223,8 @@ def _has_cluster_conflict(plasmid: Plasmid,
         return True
         
     # Check replicon type conflict
-    if plasmid.rep_type and plasmid.rep_type in rep_types_assigned:
-        return True
+    # if plasmid.rep_type and plasmid.rep_type in rep_types_assigned:
+    #     return True
         
     return False
 

@@ -3,3 +3,4 @@ biopython
 scipy
 numpy
 intervaltree
+pysam

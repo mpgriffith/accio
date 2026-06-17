@@ -525,6 +525,58 @@ class AMRRunner:
         except subprocess.CalledProcessError as e:
             raise ExternalToolError(f"AMRFinder failed: {str(e)}")
 
+class GenomadRunner:
+    """Wrapper for Genomad operations."""
+    
+    def __init__(self, config: Optional[AnalysisConfig] = None):
+        self.config = config or AnalysisConfig()
+        
+    def run_genomad(self, input_fasta: str, output_file: str) -> str:
+        """
+        Run Genomad for plasmid detection.
+        
+        Args:
+            input_fasta: Path to input FASTA file
+            output_file: Output file path
+            
+        Returns:
+            Path to output file
+            
+        Raises:
+            ExternalToolError: If Genomad execution fails
+        """
+        cmd = [
+            'genomad', 'end-to-end', 
+            '--threads', str(self.config.THREADS),
+        ]
+
+        if self.config.GENOMAD_DISABLE_NN_PRED:
+            cmd.append('--disable-nn-classification')
+
+        cmd.extend([input_fasta, output_file, self.config.GENOMAD_DB_PATH])
+        
+        try:
+            subprocess.check_call(cmd)
+            return output_file
+        except subprocess.CalledProcessError as e:
+            raise ExternalToolError(f"Genomad failed: {str(e)}")
+    
+    def read_genomad_results(self, output_file: str) -> pd.DataFrame:
+        """
+        Read Genomad results from output file.
+        
+        Args:
+            output_file: Path to Genomad output file
+            
+        Returns:
+            DataFrame with Genomad results
+        """
+        try:
+            df = pd.read_csv(output_file, sep='\t')
+            return df
+        except Exception as e:
+            raise ExternalToolError(f"Failed to read Genomad results: {str(e)}")
+
 def check_tool_availability() -> Dict[str, Dict[str, Any]]:
     """
     Check availability of external tools.
@@ -546,6 +598,7 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
         'PLASMe.py': {'cmd': 'PLASMe.py --help', 'install': 'See PLASMe GitHub for installation instructions.'},
         'mob_recon': {'cmd': 'mob_recon --version', 'install': 'pip install mob-suite'},
         'makeblastdb': {'cmd': 'makeblastdb -h', 'install': 'conda install -c bioconda blast'},
+        'genomad': {'cmd': 'genomad --version', 'install': 'pip install genomad'},
     }
     
     availability = {}

@@ -21,7 +21,7 @@ class Plasmid:
     
     def __init__(self, id: str, cluster_id: str, pling_type: str, length: int, plasmid_mash_db: str,
                  other: Optional[Dict[str, Any]] = None, rep_type: Optional[str] = None,
-                 amr_genes: Optional[str] = None):
+                 amr_genes: Optional[str] = None, group_amr_genes: Optional[str] = None) -> None:
         """
         Initialize a Plasmid object.
         
@@ -40,6 +40,7 @@ class Plasmid:
         self.plasmid_db_mash = plasmid_mash_db
         self.rep_type = rep_type
         self.amr_genes = amr_genes
+        self.group_amr_genes = group_amr_genes
         self.other = other or {}
         
         # Scoring attributes
@@ -701,6 +702,19 @@ class Plasmid:
             return []
         return list(self.blast_data[self.blast_data['use_hit'] == True]['qseqid'].unique())
 
+    def get_contig_amr_genes(self) -> Dict[str, List[str]]:
+        """
+        Get AMR genes associated with each contig based on BLAST hits.
+        
+        Returns:
+            Dictionary mapping contig IDs to lists of AMR genes
+        """
+        contig_amr = {}
+        for contig_id in self.contigs:
+            if self.contigs[contig_id].amr_genes:
+                contig_amr[contig_id] = self.contigs[contig_id].amr_genes
+        return contig_amr
+
     def get_summary(self) -> Dict[str, Any]:
         """
         Get comprehensive summary of this plasmid's analysis.
@@ -714,9 +728,11 @@ class Plasmid:
             'cluster_id': self.cluster_id,
             'length': self.length,
             'rep_type': self.rep_type,
-            'amr_genes': self.amr_genes,
+            'plasmid_amr_genes': self.amr_genes,
+            'subcommunity_amr_genes': self.group_amr_genes,
             'num_contigs': len(self.contigs),
             'contig_ids': list(self.contigs.keys()),
+            'contig_amr_genes': self.get_contig_amr_genes(),
             'final_score': self.score,
             **self.scores,
             **self.other

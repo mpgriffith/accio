@@ -1,5 +1,6 @@
 """Configuration constants and default parameters for plasmid analysis."""
 
+import os
 from typing import List, Dict, Any
 
 # BLAST output format and field definitions
@@ -82,7 +83,7 @@ class AnalysisConfig:
     # Assignment thresholds
     MIN_BLAST_SIMILARITY = 85
     MIN_PLASMID_SCORE = 0.80
-    MIN_MASH_SCORE = 0.995
+    MIN_MASH_SCORE = 0.996
     
     # Use Pling community counts for choosing best plasmid
     USE_PLING_COMMUNITY_COUNTS = False
@@ -92,12 +93,19 @@ class AnalysisConfig:
     FASTANI_FRAG_LEN = 500
     NUCMER_DIAGDIFF = 20
     NUCMER_BREAKLEN = 500
+    GENOMAD_DISABLE_NN_PRED = True
+    GENOMAD_DB_PATH = os.environ.get('GENOMAD_DB', 'genomad_db')
+    GENOMAD_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for genomad plasmid score
+    PLASME_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for PLASMe plasmid score
+    CLASSIFIER = 'plasme'  # choices: 'plasme', 'genomad', 'both'
+    
     MIN_READ_DEPTH_FACTOR = 0.25
     DCJ_THRESHOLD=0.05
     DCJ_THRESHOLD_LEN = 120000
     DCJ_THRESHOLD_NUM = 4
     
     OVERWRITE_FILES = False
+
 
 # File naming patterns
 class FilePatterns:

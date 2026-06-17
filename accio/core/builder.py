@@ -17,6 +17,7 @@ from Bio.SeqRecord import SeqRecord
 import accio
 from ..wrappers import (BLASTRunner, MashRunner, MOBRunner, PlingRunner, SkaniRunner, AMRRunner)
 from ..config import MOB_TYPER_COLS
+from ..utils.filters import filter_overlaps
 
 
 class DatabaseBuilder: 
@@ -48,6 +49,8 @@ class DatabaseBuilder:
                       output_dir: str,
                       metadata_file: Optional[str] = None,
                       update_existing: bool = False,
+                      min_size: int = 10000,
+                      max_size: int = 10000000,
                       check_circular: bool = True,
                       no_cluster: bool=False,
                       deduplicate: bool = False,
@@ -62,6 +65,8 @@ class DatabaseBuilder:
             output_dir: Output directory for database files
             metadata_file: Optional CSV file with plasmid metadata
             update_existing: Whether to update existing database
+            min_size: Minimum sequence length to include
+            max_size: Maximum sequence length to include
             check_circular: Check for circular sequences
             deduplicate: Remove duplicate sequences
             validate_sequences: Validate sequence quality
@@ -78,7 +83,8 @@ class DatabaseBuilder:
         output_path.mkdir(parents=True, exist_ok=True)
         (output_path / 'fastas').mkdir(exist_ok=True)
         (output_path / 'mob').mkdir(exist_ok=True)
-
+        self.min_length = min_size
+        self.max_length = max_size
         # Load existing data if updating
         existing_sequences = {}
         existing_metadata = pd.DataFrame()
@@ -86,6 +92,10 @@ class DatabaseBuilder:
             existing_sequences, existing_metadata = self._load_existing_database(output_dir)
             self.logger.info(f"Loaded {len(existing_sequences)} existing sequences")
         
+        #if not update_existing:
+        self.download_plasmidfinder(output_dir)
+        self.download_repetitive_db(output_dir)
+
         # Process input sequences
         self.logger.info("Processing input sequences...")
         sequences, stats = self._process_input_sequences(
@@ -105,9 +115,6 @@ class DatabaseBuilder:
             self.logger.info(f"After deduplication: {len(sequences)} sequences")
             stats['duplicates_removed'] = stats['total_input'] - len(sequences)
         
-        if not update_existing:
-            self.download_plasmidfinder(output_dir)
-            self.download_repetitive_db(output_dir)
 
         # Type sequences and filter for plasmids
         plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results = self._type_and_filter_sequences(
@@ -116,16 +123,20 @@ class DatabaseBuilder:
 
         # Cluster plasmids to find representatives
         self.logger.info("Clustering sequences...")
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta") as temp_plasmids_file:
+        #with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta") as temp_plasmids_file:
+        with open(output_path / 'plasmids_for_clustering.fasta', 'w') as temp_plasmids_file:
             SeqIO.write(plasmids.values(), temp_plasmids_file, 'fasta')
             plasmids_fasta_path = temp_plasmids_file.name
 
+        #if no_cluster == True:
         rep_plasmids, cluster_info = self.cluster_plasmids_skani(
-            plasmids_fasta_path, output_path, sim_threshold=cluster_threshold, skip_cluster=no_cluster
-        )
+                plasmids_fasta_path, output_path, sim_threshold=cluster_threshold, skip_cluster=no_cluster,
+                update=update_existing
+            )
         
         # Process and merge metadata from all sources
-        metadata_df = self._process_metadata(metadata_file, existing_metadata, sequences.keys())
+        self.logger.info("Processing metadata...")
+        metadata_df = self._process_metadata(metadata_file, existing_metadata, [s.id for s in rep_plasmids])
         metadata_df = self._merge_cluster_info(metadata_df, cluster_info, mob_df, plasmidfinder_results, amrfinder_results)
         self.logger.info("\n" + metadata_df.head().to_string())
         metadata_df.to_csv(output_dir + '/plasmid_db_before_pling.csv')
@@ -162,9 +173,13 @@ class DatabaseBuilder:
         metadata = pd.DataFrame()
         
         # Load sequences
-        fasta_path = os.path.join(db_dir, "plasmidDB.fasta")
+        fasta_path = os.path.join(db_dir, "plasmids_before_clustering.fasta")
         if os.path.exists(fasta_path):
             sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, "fasta"))
+        else:
+            fasta_path = os.path.join(db_dir, "plasmidDB.fasta")
+            if os.path.exists(fasta_path):
+                sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, "fasta"))
             
         # Load metadata
         metadata_path = os.path.join(db_dir, "plasmidDB_info.csv")
@@ -278,7 +293,11 @@ class DatabaseBuilder:
             database=str(Path(output_dir) / 'PlasmidFinder'),
             output_file=results_file
         )
-        
+        plasmidfinder_results['sim_score'] = plasmidfinder_results['pident'] * (plasmidfinder_results['length'] / plasmidfinder_results['slen'])
+        plasmidfinder_results = filter_overlaps(plasmidfinder_results, 
+                                                sort_cols=['sim_score', 'bitscore'],
+                                                sort_ascending=[False, False])
+        plasmidfinder_results = plasmidfinder_results[plasmidfinder_results['sim_score'] >= 80.0]
         return plasmidfinder_results, results_file
     
     def _run_mob_typer(self, sequence_file: str, output_dir: Path):
@@ -287,12 +306,14 @@ class DatabaseBuilder:
         results_file =  str(output_dir / 'mob_typer_results.tsv')
         results_file = mob_runner.run_mob_typer(sequence_file, str(output_dir / 'mob_typer_results.tsv'), multi=True)
         mob_df = pd.read_csv(results_file, sep='\t')
+        mob_df['contig_id'] = mob_df['sample_id'].map(lambda s: s.split()[0])
         return mob_df, results_file
     
     def _run_amrfinder(self, sequence_file: str, output_dir: Path) -> pd.DataFrame:
         """Run AMRFinder on sequences."""
         amrfinder_runner = AMRRunner()
         self.logger.info("Running AMRFinder...")
+        results_file = str(output_dir / 'amrfinder_results.tsv')
         results_file = amrfinder_runner.run_amrfinder(sequence_file, str(output_dir / 'amrfinder_results.tsv')) 
         return pd.read_csv(results_file, sep='\t')
 
@@ -303,7 +324,7 @@ class DatabaseBuilder:
         keep_ids = set()
         
         for p_id, p_record in sequences.items():
-            mob_plasmid = mob_results[mob_results['sample_id'] == p_id]
+            mob_plasmid = mob_results[mob_results['contig_id'] == p_id]
             pf_plasmid = plasmidfinder_results[plasmidfinder_results['qseqid'] == p_id]
             
             # Keep if `use_all` is true, or if it has any PlasmidFinder hits
@@ -347,11 +368,13 @@ class DatabaseBuilder:
                         continue
                     
                     # Check for circularity
-                    if not use_all and check_circular:
+                    if check_circular:
                         is_circular = self._check_circularity(record)
                         if is_circular:
                             record.annotations['topology'] = 'circular'
                             stats['circular_count'] += 1
+                        else:
+                            continue
                     
                     # Clean sequence ID
                     clean_id = self._clean_sequence_id(record.id)
@@ -456,8 +479,9 @@ class DatabaseBuilder:
         # Combine with existing metadata
         if not existing_metadata.empty:
             metadata_df = pd.concat([existing_metadata, metadata_df], ignore_index=True)
+            self.logger.debug(f"metadata combined: {metadata_df.head()}")
             metadata_df = metadata_df.drop_duplicates(subset=['plasmid_id'], keep='last')
-        
+            metadata_df = metadata_df[metadata_df['plasmid_id'].isin(sequence_ids)]
         # Create default metadata for sequences without metadata
         all_seq_ids = set(sequence_ids)
         existing_ids = set(metadata_df.get('plasmid_id', []))
@@ -537,7 +561,8 @@ class DatabaseBuilder:
         return cluster_info
     
     def cluster_plasmids_skani(self, plasmid_file: str, output_dir: Path, sim_threshold: float = 99.95,
-                              cov_threshold: float = 98.0, skip_cluster: bool = False) -> Tuple[List[SeqRecord], pd.DataFrame]:
+                              cov_threshold: float = 98.0, skip_cluster: bool = False,
+                              update: bool = False) -> Tuple[List[SeqRecord], pd.DataFrame]:
         """
         Cluster plasmids using skani.
         
@@ -550,12 +575,13 @@ class DatabaseBuilder:
         Returns:
             Tuple of (representative sequences, cluster data)
         """
-        self.logger.info(f"Clustering plasmids with skani (threshold={sim_threshold}%)")
         from scipy.spatial.distance import squareform
         # Load sequences
         clus_seqs = list(SeqIO.parse(plasmid_file, 'fasta'))
         
-        if skip_cluster:
+        if skip_cluster == True:
+            self.logger.info(f"Skip clustering plasmids - keeping all {len(clus_seqs)} sequences as representatives")
+
             clus_data = pd.DataFrame({
                 'Plasmid': [seq.id for seq in clus_seqs],
                 'cluster': [str(i) for i in range(len(clus_seqs))],
@@ -566,6 +592,8 @@ class DatabaseBuilder:
             return clus_seqs, clus_data
             
         # Run skani
+        self.logger.info(f"Clustering plasmids with skani (threshold={sim_threshold}%)")
+
         skani_output = str(output_dir / 'skani_results.tsv')
         self.skani_runner.run_ska_dist(plasmid_file, skani_output)
         skani_df = pd.read_csv(skani_output, sep='\t')
@@ -628,7 +656,10 @@ class DatabaseBuilder:
             # Get representative sequences
             rep_seq_ids = list(clus['Representative'].unique())
             rep_seqs = [s for s in clus_seqs if s.id in rep_seq_ids]
-            
+            # if update:
+            #     old_rep_df = pd.read_csv(output_dir / 'representative_plasmids.csv')
+            #     clus = pd.concat([old_rep_df, clus], ignore_index=True).drop_duplicates(subset=['Plasmid'], keep='last')
+            clus.to_csv(str(output_dir / 'representative_plasmids.csv'))
             self.logger.info(f"Clustered into {len(rep_seqs)} representative sequences")
             return rep_seqs, clus
             
@@ -711,25 +742,28 @@ class DatabaseBuilder:
                            plasmidfinder_results: pd.DataFrame,
                            amrfinder_results: pd.DataFrame) -> pd.DataFrame:
         """Merge clustering information with metadata."""
+        print(metadata_df.head())
         metadata_df = metadata_df.set_index('plasmid_id')
 
         if not cluster_info.empty:
             cluster_info = cluster_info.set_index('Plasmid')
-            metadata_df['primary_cluster_id'] = cluster_info['cluster']
-            metadata_df['representative'] = cluster_info['Representative']
-            metadata_df = metadata_df.loc[cluster_info['Representative'].unique()]
+            metadata_df['primary_cluster_id'] = metadata_df.index.map(lambda s: cluster_info.loc[s, 'cluster'])
+            # metadata_df['representative'] = metadata_df.index.map(lambda s: ['Representative']
+            # metadata_df = metadata_df.loc[cluster_info['Representative'].unique()]
             metadata_df['plasmid_id'] = metadata_df.index
 
         mob_df['plasmid_id'] = mob_df['sample_id'].map(lambda s: s.split()[0])
         mob_df = mob_df.set_index('plasmid_id')
         metadata_df = metadata_df.merge(mob_df, left_index=True, right_index=True, suffixes=['_x', ''], how='left')
-        pf_summary = plasmidfinder_results.groupby('qseqid')['sseqid'].apply(lambda x: ','.join(x.unique())).reset_index()
+        pf_summary = plasmidfinder_results.groupby('qseqid')['sseqid'].apply(lambda x: ','.join(x.unique()))
 
-        metadata_df['plasmidfinder_reps'] = metadata_df.index.map(lambda s: pf_summary.loc[s, 'sseqid'] if s in pf_summary.index else None)
+        metadata_df['plasmidfinder_reps'] = metadata_df.index.map(lambda s: pf_summary.loc[s] if s in pf_summary.index else None)
         self.logger.debug("\n" + metadata_df.head().to_string())
 
-        metadata_df['rep_types'] = metadata_df.apply(lambda r: self._combine_rep_types([r['rep_type(s)'], r['plasmidfinder_reps']]), axis=1)
+        metadata_df['rep_types'] = metadata_df.apply(lambda r: self._combine_rep_types([r['plasmidfinder_reps']]), axis=1)
         metadata_df['amr_genes'] = metadata_df.index.map(lambda s: ','.join(amrfinder_results[amrfinder_results['Contig id'] == s]['Element symbol'].unique()))
+
+        
         metadata_df = metadata_df.drop(columns=[c for c in metadata_df.columns if '_x' in c])
         metadata_df['sample_id'] = metadata_df.index
 
@@ -796,6 +830,8 @@ class DatabaseBuilder:
             f.write(f"  6-10 sequences: {sum((cluster_sizes >= 6) & (cluster_sizes <= 10))} clusters\n")
             f.write(f"  >10 sequences: {sum(cluster_sizes > 10)} clusters\n")
     
+    
+
     def _create_plasmid_communities(self, sequences: Dict[str, SeqRecord], 
                                     metadata_df: pd.DataFrame, output_dir: str) -> pd.DataFrame:
         pling_runner = PlingRunner()
@@ -817,11 +853,21 @@ class DatabaseBuilder:
             hub_plasmids = pd.read_csv(str(Path(pling_dir) / 'dcj_thresh_4_graph' /'objects'/ 'hub_plasmids.csv'), index_col=0)
             communities = pd.read_csv(str(Path(pling_dir) / 'containment' /'containment_communities' /'objects'/ 'communities.tsv'), sep='\t', index_col=0, header=0, names=['community'])
 
-            metadata_df = metadata_df.join(pling_types, how='left')
-            metadata_df = metadata_df.join(communities, how='left')
+            metadata_df = metadata_df.join(pling_types, how='left', lsuffix='_orig')
+            metadata_df = metadata_df.join(communities, how='left', lsuffix='_orig')
+            cols_to_drop = [col for col in metadata_df.columns if col.endswith('_orig')]
+            metadata_df = metadata_df.drop(columns=cols_to_drop)
             for i, h in enumerate(hub_plasmids.index):
                 metadata_df.loc[h, 'pling_type'] = communities.loc[h, 'community'] + f"_hub{i}"
-
+            def get_amr_genes_by_subcommunity(subcommunity):
+                if pd.isna(subcommunity):
+                    return None
+                sub_df = metadata_df[metadata_df['pling_type'] == subcommunity]
+                amr_genes = set()
+                for genes in sub_df['amr_genes'].dropna():
+                    amr_genes.update(genes.split(','))
+                return ','.join(sorted(set(amr_genes)))
+            metadata_df['subcommunity_amr_genes'] = metadata_df['pling_type'].map(get_amr_genes_by_subcommunity)
         return metadata_df
 
     def _build_blast_database(self, output_dir: str) -> None:

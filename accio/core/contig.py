@@ -36,6 +36,8 @@ class Contig:
         self.gene_data: Dict[str, Any] = {}
         self.plasmid_matches: List[str] = []
         self.rep_types: Optional[List[str]] = None
+        self.amr_genes: Optional[List[str]] = None
+        self.classifier_scores: Dict[str, float] = {}
         self.copy_num: Optional[float] = None
         self.plas_data: List[Optional[str]] = [(None, None)]  # [plasmid_id, cluster_id]
         
@@ -110,7 +112,7 @@ class Contig:
             self.plas_data = [(None, None)]
             self.rep_types = list(df['sseqid'].unique())
 
-    def add_plasme_data(self, plasme_df: pd.DataFrame) -> None:
+    def add_plasme_data(self, plasme_df: pd.DataFrame, threshold: float) -> None:
         """
         Add PLASMe classification results.
         
@@ -122,28 +124,51 @@ class Contig:
             
         row = plasme_df.iloc[0]
         
+        plasme_score = row.get('score', 0)
+
         # Check for ambiguous regions
         amb_regions = row.get('amb_region', '')
         if isinstance(amb_regions, str) and amb_regions:
             amb_region_len = 0
             for r in amb_regions.split(','):
                 if '-' in r:
-                    s, e = r.split('-')
                     try:
+                        s, e = map(int, r.split('-'))
                         amb_region_len += int(e) - int(s)
                     except ValueError:
                         continue
                         
             if amb_region_len / row['length'] > 0.5:
                 return
-                
+
         # Check transformer evidence
         if (row.get('evidence') == 'Transformer' and 
-            row.get('score', 0) <= 0.75):
+            plasme_score <= 0.75): # This threshold is hardcoded in PLASMe, keep it for now
             return
-            
-        self.type = 'plasmid'
-        self.plas_data = [(None, None)]
+        
+        if plasme_score >= threshold:
+            self.classifier_scores['plasme'] = plasme_score
+            self.type = 'plasmid'
+            self.plas_data = [(None, None)]
+
+    def add_genomad_data(self, genomad_df: pd.DataFrame, threshold: float) -> None:
+        """
+        Add geNomad classification results.
+        
+        Args:
+            genomad_df: DataFrame containing geNomad results
+            threshold: Score threshold for classification
+        """
+        if genomad_df.empty:
+            return
+        
+        genomad_score = genomad_df.iloc[0].get('plasmid_score', 0)
+        if genomad_score >= threshold:
+            self.classifier_scores['genomad'] = genomad_score
+            self.type = 'plasmid'
+            self.plas_data = [(None, None)]
+        else:
+            return
 
     def add_repetitive_data(self, rep_df: pd.DataFrame, config: Optional[AnalysisConfig] = None) -> None:
         """
@@ -263,6 +288,15 @@ class Contig:
         else:
             self.plas_data = [(plasmid_id, cluster_id)]
 
+    def add_amr_genes(self, amr_genes: List[str]) -> None:
+        """
+        Add AMR gene information.
+        
+        Args:
+            amr_genes: List of identified AMR genes
+        """
+        self.amr_genes = amr_genes
+
     def is_plasmid_candidate(self) -> bool:
         """
         Check if this contig is a candidate for plasmid assignment.
@@ -278,6 +312,7 @@ class Contig:
             bool(self.rep_types) or
             True # true for now while i think about integrated plasmids
         )
+
 
     def get_summary(self) -> Dict[str, Any]:
         """
@@ -299,7 +334,8 @@ class Contig:
             'rep_types': self.rep_types,
             'num_blast_hits': len(self.blast_data) if not self.blast_data.empty else 0,
             'num_plasmid_matches': len(self.plasmid_matches),
-            'is_plasmid_candidate': self.is_plasmid_candidate()
+            'is_plasmid_candidate': self.is_plasmid_candidate(),
+            'amr_genes': ', '.join(self.amr_genes) if self.amr_genes else None
         }
 
     def __repr__(self) -> str:

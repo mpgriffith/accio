@@ -9,7 +9,7 @@ import multiprocessing
 from pathlib import Path
 from typing import Optional, List
 import pandas as pd
-from .config import AnalysisConfig, get_config, validate_config
+from .config import AnalysisConfig, get_config, validate_config, FilePatterns
 from .wrappers.external_tools import check_tool_availability, validate_databases
 from .core.workflow import PlasmidAnalysisWorkflow
 from .core.builder import DatabaseBuilder
@@ -20,20 +20,28 @@ def setup_logging(log_level: str = 'INFO', log_file: Optional[str] = None) -> No
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {log_level}')
-    
+
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    formatter = logging.Formatter(log_format)
+
+    # Get the root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+
+    # Remove any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
 
     if log_file:
-        logging.basicConfig(
-            level=numeric_level,
-            format=log_format,
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
+        # Add a file handler
+        file_handler = logging.FileHandler(log_file, mode='w') # 'w' to overwrite for each run
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
     else:
-        logging.basicConfig(level=numeric_level, format=log_format)
+        # Add a stream handler to stdout if no file is specified
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
 
 
 def create_main_parser() -> argparse.ArgumentParser:
@@ -132,6 +140,11 @@ Examples:
         nargs='+',
         help='Read files for coverage analysis (FASTQ format)'
     )
+    find_parser.add_argument(
+        '--log_file',
+        help='Path to a log file for this run. If not provided, a default will be created in the output directory.'
+    )
+
     add_find_analyses_parsers(find_parser)
 
 def add_find_analyses_parsers(parser):   
@@ -166,6 +179,23 @@ def add_find_analyses_parsers(parser):
         help='Minimum plasmid assignment score (default: 0.80)'
     )
     
+    analysis_group.add_argument('--min_mash_score',
+                                type=float, default=0.995,
+                                help='Minimum Mash similarity score (default: 0.995)')
+
+    analysis_group.add_argument(
+        '--classifier',
+        choices=['plasme', 'genomad', 'both'],
+        default='plasme',
+        help='Classifier to use for plasmid prediction (default: plasme)'
+    )
+
+    analysis_group.add_argument(
+        '--genomad_db',
+        help='Path to the geNomad database directory',
+        default=os.environ.get('GENOMAD_DB', 'genomad_db')
+    )
+
     analysis_group.add_argument(
         '--circular_only',
         action='store_true',
@@ -182,6 +212,7 @@ def add_find_analyses_parsers(parser):
         help='Use minimap2 instead of BWA for read mapping (recommended for long reads)'
     )
     
+
     mapping_group.add_argument(
         '--mapping_preset',
         choices=['sr', 'map-ont', 'map-pb', 'asm5', 'asm10', 'asm20'],
@@ -292,7 +323,7 @@ Examples:
         default=0.95,
         help='Similarity threshold for clustering (default: 0.95)'
     )
-    process_group.add_argument('--no_plasmid_check',
+    process_group.add_argument('--no-plasmid-check',
                                 action='store_true', default=False,
                                 help='Do not check for circularity/plasmid replicons')
     process_group.add_argument('--no_clustering',
@@ -314,11 +345,6 @@ Examples:
         help='Remove duplicate sequences based on 100%% identity'
     )
     
-    qc_group.add_argument(
-        '--validate_sequences',
-        action='store_true',
-        help='Validate sequence quality and remove problematic sequences'
-    )
 
 
 def add_check_parser(subparsers) -> None:
@@ -369,13 +395,26 @@ def add_multi_parser(subparsers) -> None:
     multi_parser.add_argument('--reads_dir', help="Directory containing read files.")
     multi_parser.add_argument('-d', '--database', required=True, help="Path to the database directory.")
     multi_parser.add_argument('-o', '--output_dir', required=True, help="Parent directory for all output.")
-    multi_parser.add_argument('--collate', action='store_true', help="Automatically collate results into a summary file.")
 
     add_find_analyses_parsers(multi_parser) 
 
 
 def handle_find_command(args: argparse.Namespace) -> int:
     """Handle the 'find' subcommand."""
+    # Determine sample name early for logging
+    sample_name = args.sample_name if hasattr(args, 'sample_name') and args.sample_name else Path(args.assembly).stem
+    if not Path(args.output).exists():
+        os.makedirs(args.output, exist_ok=True)
+    # Set up logging for this specific find command
+    log_file = args.log_file
+    if not log_file:
+        # Create a default log file in the output directory
+        log_file = Path(args.output) / f"{sample_name}_accio.log"
+
+    # Reconfigure logging for this specific run
+    log_level = args.log_level if hasattr(args, 'log_level') else 'INFO'
+    setup_logging(log_level=log_level, log_file=str(log_file))
+
     logger = logging.getLogger(__name__)
     
     try:
@@ -427,7 +466,12 @@ def handle_find_command(args: argparse.Namespace) -> int:
         config.MIN_IDENTITY = args.min_identity
         config.MIN_COVERAGE = args.min_coverage
         config.MIN_PLASMID_SCORE = args.min_score
+        config.MIN_MASH_SCORE = args.min_mash_score
         config.THREADS = args.threads
+        config.CLASSIFIER = args.classifier
+        config.GENOMAD_DB_PATH = args.genomad_db
+        config.plasmid_db = args.database # Explicitly set the database path in config
+
         config.USE_PLING_COMMUNITY_COUNTS = args.use_pling_type_counts
         
         if args.circular_only:
@@ -435,13 +479,10 @@ def handle_find_command(args: argparse.Namespace) -> int:
             
         validate_config(config)
         
-        # Determine sample name
-        sample_name = args.sample_name
-        if not sample_name:
-            sample_name = Path(args.assembly).stem
         
         # Initialize workflow
         logger.info(f"🔍 Starting plasmid analysis for sample: {sample_name}")
+        logger.info('Using database: {}'.format(args.database))
         workflow = PlasmidAnalysisWorkflow(config)
         
         # Run analysis
@@ -566,11 +607,12 @@ def handle_create_command(args: argparse.Namespace) -> int:
             input_files=[str(p) for p in input_files],
             output_dir=args.output,
             update_existing=args.update,
+            min_size=args.min_length,
+            max_size=args.max_length,
             check_circular=args.check_circular,
             no_cluster=args.no_clustering,
             deduplicate=args.deduplicate,
             use_all=args.no_plasmid_check,
-            validate_sequences=args.validate_sequences,
             cluster_threshold=args.cluster_threshold
         )
         
@@ -680,17 +722,18 @@ def handle_multi_command(args: argparse.Namespace) -> int:
     logger.info(f"Found {len(assembly_files)} assemblies to process.")
     logger.info(f"Running up to {args.threads} samples in parallel.")
     
-    # Create the main output directory
+    # Create the main output directory  
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     jobs_to_run = []
     for assembly_file in assembly_files:
-        sample_name = Path(assembly_file).stem
-        logger.info(f"--- Processing sample: {sample_name} ---")
+        sample_name_stem = Path(assembly_file).stem
+        sample_name = sample_name_stem
         
-        sample_output_dir = Path(args.output_dir) / sample_name
+        sample_output_dir = Path(args.output_dir) / sample_name_stem
         sample_output_dir.mkdir(exist_ok=True)
 
+        logger.info(f"--- Preparing job for sample: {sample_name_stem} ---")
         # Prepare arguments for the 'find' command for this specific sample
         job_args = argparse.Namespace(**vars(args))
         job_args.assembly = assembly_file
@@ -700,7 +743,7 @@ def handle_multi_command(args: argparse.Namespace) -> int:
         # Find corresponding read files if a reads directory is provided
         if args.reads_dir:
             # Assumes reads are named like: {sample_name}_R1.fastq.gz, {sample_name}_R2.fastq.gz, etc.
-            read_files = sorted(glob.glob(f"{args.reads_dir}/{sample_name}*"))
+            read_files = sorted(glob.glob(f"{args.reads_dir}/{sample_name_stem}/*f*q*"))
             if read_files:
                 logger.info(f"Found {len(read_files)} read file(s) for {sample_name}")
                 job_args.reads = read_files
@@ -718,18 +761,16 @@ def handle_multi_command(args: argparse.Namespace) -> int:
     
     logger.info("--- Multi-analysis complete! ---")    
     # Automatically collate results if requested
-    if args.collate:
-        logger.info("Collating results...")
-        collate_pattern = f"{args.output_dir}/*/{Path(FilePatterns.PLASMID_DATA_OUTPUT).name.format(sample='*')}"
-        collate_output = Path(args.output_dir) / "summary_report.csv"
-        
-        collate_args = argparse.Namespace(
-            input_pattern=collate_pattern,
-            output=str(collate_output)
-        )
-        handle_combine_command(collate_args)
-    else:
-        logger.info(f"To combine all results into a single summary, run: accio collate '{args.output_dir}/*/{Path(FilePatterns.PLASMID_DATA_OUTPUT).name.format(sample='*')}' -o {args.output_dir}/summary_report.csv")
+
+    logger.info("Collating results...")
+    collate_pattern = f"{args.output_dir}/*/{Path(FilePatterns.PLASMID_DATA_OUTPUT).name.format(sample='*')}"
+    collate_output = Path(args.output_dir) / "summary_report.csv"
+    
+    collate_args = argparse.Namespace(
+        input_pattern=collate_pattern,
+        output=str(collate_output)
+    )
+    handle_combine_command(collate_args)
     return 0
 
 def handle_combine_command(args: argparse.Namespace) -> int:
@@ -741,9 +782,13 @@ def handle_combine_command(args: argparse.Namespace) -> int:
     for f in results_files:
         try:
             df = pd.read_csv(f)
-            sample_name = f.split(os.sep)[-1].split('_')[0]
-            df['sample'] = sample_name
-
+            sample_name = Path(f).stem.split('_plasmids_chosen')[0]
+            print(sample_name)
+            df['Sample'] = sample_name
+            #df.columns = ['Sample'] + list(df.columns[:-1])
+            col_to_move = df.pop('Sample')
+            df.insert(0, 'Sample', col_to_move)
+            print(df.head(5))
             all_dfs.append(df)
         except pd.errors.EmptyDataError:
             logger.warning(f"Skipping empty file {f}")

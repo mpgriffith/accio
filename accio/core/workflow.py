@@ -10,8 +10,8 @@ import pysam
 
 from ..config import AnalysisConfig, MAX_PLASMID_LENGTH, FilePatterns
 from ..wrappers.external_tools import (
-    BLASTRunner, MashRunner, NucmerRunner, PLASMeRunner,
-    ReadMappingRunner, MOBRunner, ExternalToolError
+    BLASTRunner, MashRunner, NucmerRunner, PLASMeRunner, GenomadRunner,
+    ReadMappingRunner, MOBRunner, ExternalToolError, AMRRunner
 )
 from .contig import Contig
 from .plasmid import Plasmid
@@ -37,8 +37,10 @@ class PlasmidAnalysisWorkflow:
         self.mash_runner = MashRunner(config)
         self.nucmer_runner = NucmerRunner(config)
         self.plasme_runner = PLASMeRunner(config)
+        self.genomad_runner = GenomadRunner(config)
         self.mapping_runner = ReadMappingRunner(config)
         self.mob_runner = MOBRunner(config)
+        self.amr_runner = AMRRunner(config)
         
     def run(self, fasta_file: str, reads: Optional[List[str]], 
             db_dir: str, output_dir: str, 
@@ -78,7 +80,7 @@ class PlasmidAnalysisWorkflow:
         blast_results = self._run_sequence_analysis(
             fasta_file, db_dir, output_dir, sample_name, keep_intermediate
         )
-        if self.logger.isEnabledFor(logging.DEBUG):
+        if self.logger.isEnabledFor(logging.DEBUG) or keep_intermediate:
             for name, df in blast_results.items():
                 df.to_csv(Path(output_dir) / f'{sample_name}_{name}.blast.csv')
         # Run read-based analysis if reads provided
@@ -96,7 +98,7 @@ class PlasmidAnalysisWorkflow:
         # Process plasmids with analysis results
         self.logger.info("Processing plasmid analysis results")
         plasmid_matches = self._process_plasmids(contigs, plasmids, blast_results, coverage_results=coverage_data)
-        if self.logger.isEnabledFor(logging.DEBUG):
+        if self.logger.isEnabledFor(logging.DEBUG) or keep_intermediate:
             initial_plasmid_data = []
             for pid, p in plasmids.items():
                 summary = p.get_summary()
@@ -119,7 +121,7 @@ class PlasmidAnalysisWorkflow:
             assignment_results, novel_results, contigs, 
             output_dir, sample_name
         )
-        if not self.logger.isEnabledFor(logging.DEBUG):
+        if not self.logger.isEnabledFor(logging.DEBUG) and not keep_intermediate:
             
             self._clean_up_files(output_dir, output_files.values())
 
@@ -161,7 +163,9 @@ class PlasmidAnalysisWorkflow:
                     length=row['size'],
                     plasmid_mash_db=mash_db,
                     other={'pling_type': row['pling_type']},
-                    rep_type=row.get('rep_types', None)
+                    rep_type=row.get('rep_types', None),
+                    amr_genes = row.get('amr_genes', None),
+                    group_amr_genes=row.get('subcommunity_amr_genes', None)
                 )
                 
             self.logger.info(f"Loaded {len(plasmids)} reference plasmids")
@@ -227,6 +231,9 @@ class PlasmidAnalysisWorkflow:
             )
             if rep_out_path: self.intermediate_files.append(rep_out_path)
             
+            # BLAST against AMR genes
+            amr_genes = self._run_amrfinder(fasta_file, output_dir)
+            results['amr_genes'] = amr_genes            
             # Mash screening
             self.logger.info("Running Mash screening")
             output_file = output_dir_path / FilePatterns.MASH_OUTPUT.format(sample=sample_name)
@@ -246,16 +253,31 @@ class PlasmidAnalysisWorkflow:
             if keep_intermediate:
                 self.intermediate_files.extend(nucmer_files.values())
             
-            # PLASMe analysis
-            self.logger.info("Running PLASMe analysis")
-            try:
-                plasme_results, plasme_files = self.plasme_runner.run_plasme(fasta_file, str(Path(output_dir) / 'plasme'))
-                results['plasme'] = plasme_results
-                if keep_intermediate:
-                    self.intermediate_files.extend(plasme_files.values())
-            except ExternalToolError as e:
-                self.logger.warning(f"PLASMe analysis failed: {e}")
-                results['plasme'] = pd.DataFrame()
+            # Classifier analysis (PLASMe and/or geNomad)
+            results['plasme'] = pd.DataFrame()
+            results['genomad'] = pd.DataFrame()
+
+            if self.config.CLASSIFIER in ['plasme', 'both']:
+                self.logger.info("Running PLASMe analysis")
+                try:
+                    plasme_results, plasme_files = self.plasme_runner.run_plasme(fasta_file, str(output_dir_path / 'plasme'))
+                    results['plasme'] = plasme_results
+                    if keep_intermediate:
+                        self.intermediate_files.extend(plasme_files.values())
+                except ExternalToolError as e:
+                    self.logger.warning(f"PLASMe analysis failed: {e}")
+            
+            if self.config.CLASSIFIER in ['genomad', 'both']:
+                self.logger.info("Running geNomad analysis")
+                try:
+                    genomad_dir = output_dir_path / 'genomad'
+                    self.genomad_runner.run_genomad(fasta_file, str(genomad_dir))
+                    stem = Path(fasta_file).stem
+                    summary_file = genomad_dir / f"{stem}_summary" / f"{stem}_plasmid_summary.tsv"
+                    if summary_file.exists():
+                        results['genomad'] = self.genomad_runner.read_genomad_results(str(summary_file))
+                except ExternalToolError as e:
+                    self.logger.warning(f"geNomad analysis failed: {e}")
                 
         except ExternalToolError as e:
             self.logger.error(f"Sequence analysis failed: {e}")
@@ -355,10 +377,37 @@ class PlasmidAnalysisWorkflow:
             contig_blast = blast_results['blast'][blast_results['blast']['qseqid'] == contig_id]
             contig.add_blast_data(contig_blast, self.config)
             
-            # Add PLASMe data
-            if not blast_results['plasme'].empty:
-                plasme_data = blast_results['plasme'][blast_results['plasme']['contig'] == contig_id]
-                contig.add_plasme_data(plasme_data)
+            # Process PLASMe results
+            plasme_passed = False
+            if self.config.CLASSIFIER in ['plasme', 'both'] and not blast_results['plasme'].empty:
+                plasme_match = blast_results['plasme'][blast_results['plasme']['contig'] == contig_id]
+                if not plasme_match.empty:
+                    # PLASMe-specific filtering (ambiguous regions, transformer evidence)
+                    # This logic was previously in contig.add_plasme_data.
+                    # For now, we'll simplify to just score threshold as per user's "either" request.
+                    # If specific PLASMe filtering is needed, it should be re-added here.
+                    contig.add_plasme_data(plasme_match, self.config.PLASME_PLASMID_SCORE_THRESHOLD)
+                    if hasattr(contig, 'classifier_scores') and 'plasme' in contig.classifier_scores:
+                        plasme_passed = True
+
+            # Process geNomad results
+            genomad_passed = False
+            if self.config.CLASSIFIER in ['genomad', 'both'] and not blast_results['genomad'].empty:
+                genomad_match = blast_results['genomad'][blast_results['genomad']['seq_name'] == contig_id]
+                if not genomad_match.empty:
+                    contig.add_genomad_data(genomad_match, self.config.GENOMAD_PLASMID_SCORE_THRESHOLD)
+                    if hasattr(contig, 'classifier_scores') and 'genomad' in contig.classifier_scores:
+                        genomad_passed = True
+            
+            # Determine final plasmid classification for the contig based on chosen classifier mode
+            if (self.config.CLASSIFIER == 'plasme' and plasme_passed) or \
+               (self.config.CLASSIFIER == 'genomad' and genomad_passed) or \
+               (self.config.CLASSIFIER == 'both' and (plasme_passed or genomad_passed)):
+                contig.type = 'plasmid'
+                # Initialize plas_data if it's still the default
+                # if contig.plas_data == [(None, None)]:
+                #     contig.plas_data = [(None, )]
+                pass
                 
             # Add replicon type data
             if not blast_results['plasmidfinder'].empty:
@@ -369,7 +418,13 @@ class PlasmidAnalysisWorkflow:
             if not blast_results['repetitive'].empty:
                 rep_elem_data = blast_results['repetitive'][blast_results['repetitive']['qseqid'] == contig_id]
                 contig.add_repetitive_data(rep_elem_data, self.config)
-                
+            
+            # Add AMR gene data
+            if not blast_results['amr_genes'].empty:
+                amr_data = blast_results['amr_genes'][blast_results['amr_genes']['Contig id'] == contig_id]
+                amr_data['sim_score]'] = amr_data['% Identity to reference'] * amr_data['% Coverage of reference'] / 100
+                amr_data = amr_data[amr_data['sim_score]'] > 80]
+                contig.add_amr_genes(amr_data['Element symbol'].tolist())
             # Add Nucmer data
             coords_data = blast_results['nucmer_coords'][blast_results['nucmer_coords']['qseqid'] == contig_id]
             snps_data = blast_results['nucmer_snps'][blast_results['nucmer_snps']['query'] == contig_id]
@@ -454,7 +509,8 @@ class PlasmidAnalysisWorkflow:
         
     def _assign_plasmids(self, contigs: Dict[str, Contig], 
                         plasmids: Dict[str, Plasmid],
-                        output_dir: str, sample_name: str) -> Dict[str, Any]:
+                        output_dir: str, sample_name: str,
+                        keep_intermediate: bool = False) -> Dict[str, Any]:
         """Assign contigs to plasmids using the assignment algorithm."""
         
         # Separate circular contigs for priority processing
@@ -480,7 +536,7 @@ class PlasmidAnalysisWorkflow:
                         # Create a copy of plasmid for this analysis
                         test_plasmid = Plasmid(
                             plasmid.id, plasmid.cluster_id, plasmid.pling_type, plasmid.length,
-                            plasmid.plasmid_db_mash, plasmid.other, plasmid.rep_type
+                            plasmid.plasmid_db_mash, plasmid.other, plasmid.rep_type, plasmid.amr_genes
                         )
                         test_plasmid.add_contigs(contig)
                         test_plasmid.calc_scores(config=self.config)
@@ -538,7 +594,7 @@ class PlasmidAnalysisWorkflow:
             
             all_assigned_plasmids.extend(assigned_plasmids)
             all_assigned_contigs.update(assigned_contigs)
-        if self.logger.isEnabledFor(logging.DEBUG):
+        if self.logger.isEnabledFor(logging.DEBUG) or keep_intermediate:
             pd.DataFrame(circ_data).to_csv(Path(output_dir) / f'{sample_name}_initial_circular_contig_plasmid_data.csv')
             pd.DataFrame(linear_data).to_csv(Path(output_dir) / f'{sample_name}_initial_linear_contig_plasmid_data.csv')
             pd.DataFrame(circ_data + linear_data).to_csv(Path(output_dir) / f'{sample_name}_initial_all_contig_plasmid_data.csv')
@@ -564,6 +620,7 @@ class PlasmidAnalysisWorkflow:
         mob_contigs = pd.DataFrame()
 
         try:
+            self.logger.info(f"Running MOB-recon on {novel_fasta} with output dir {mob_output_dir}")
             mob_files = self.mob_runner.run_mob_recon(str(novel_fasta), str(mob_output_dir))
             self.logger.info("MOB-recon analysis completed for novel plasmids.")
 
@@ -586,6 +643,27 @@ class PlasmidAnalysisWorkflow:
 
         return mob_results, mob_contigs
 
+    def _run_amrfinder(self, novel_fasta: Path, output_dir: str) -> pd.DataFrame:
+        """Run AMRFinder on novel plasmid contigs."""
+        amr_results = pd.DataFrame()
+        amr_output_file = Path(output_dir) / 'amrfinder_novel_plasmids.tsv'
+        
+        try:
+            amr_files = self.amr_runner.run_amrfinder(str(novel_fasta), str(amr_output_file))
+            self.logger.info("AMRFinder analysis completed for novel plasmids.")
+            
+            if amr_output_file.exists() and amr_output_file.stat().st_size > 0:
+                amr_results = pd.read_csv(amr_output_file, sep='\t', on_bad_lines='skip')
+            else:
+                self.logger.warning("AMRFinder did not produce the expected output file.")
+                
+        except ExternalToolError as e:
+            self.logger.warning(f"AMRFinder processing failed: {e}")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred during AMRFinder parsing: {e}")
+            
+        return amr_results
+
     def _process_novel_plasmids(self, contigs: Dict[str, Contig],
                                output_dir: str, sample_name: str) -> Dict[str, Any]:
         """Process contigs that appear to be novel plasmids."""
@@ -594,11 +672,16 @@ class PlasmidAnalysisWorkflow:
         if novel_contigs:
             self.logger.info(f"Found {len(novel_contigs)} novel plasmid contigs")
             novel_fasta = Path(output_dir) / FilePatterns.NOVEL_PLASMIDS_OUTPUT.format(sample=sample_name)
-
+            
             try:
                 novel_seqs = [c.seq for c in novel_contigs]
                 SeqIO.write(novel_seqs, novel_fasta, 'fasta')
                 mob_results, mob_contigs = self._run_and_parse_mob_recon(novel_fasta, output_dir)
+                amr_results = self._run_amrfinder(novel_fasta, output_dir)
+                for contig_id, df in amr_results.groupby('Contig id'):
+                    contig = next((c for c in novel_contigs if c.id == contig_id), None)
+                    if contig:
+                        contig.add_amr_genes(df['Element symbol'].tolist())
             except (IOError, OSError) as e:
                 self.logger.error(f"Failed to write novel plasmids FASTA file: {e}")
                 return {'contigs': novel_contigs, 'mob_results': pd.DataFrame(), 'contig_results': pd.DataFrame()}
@@ -622,9 +705,12 @@ class PlasmidAnalysisWorkflow:
         # Add assigned plasmids
         for plasmid in assignment_results['plasmids_assigned']:
             summary = plasmid.get_summary()
+            summary['ACCIO_Plasmids'] = 'chosen_plasmid'
             plasmid_data.append(summary)
             
-
+        if len(plasmid_data) == 0:
+            none_assigned = {"ACCIO_Plasmids": "chosen_plasmid", "plasmid_id": None, 'cluster_id': None, 'pling_type': None, 'contig_ids': []}
+            plasmid_data.append(none_assigned)
         # Add novel plasmid entries from MOB-recon results
         novel_contigs = novel_results.get('contigs', [])
         mob_results = novel_results.get('mob_results', pd.DataFrame())
@@ -645,12 +731,14 @@ class PlasmidAnalysisWorkflow:
                 rep_types = set()
                 for contig in plasmid_contigs:
                     if contig.rep_types:
-                        rep_types.update(contig.rep_types)
+
+                        rep_types.update(set(r.split('_')[0].split('(')[0].split('-')[0] for r in contig.rep_types))
 
                 # Get data from the first row of the group, assuming it's representative
                 #rep_row = group.iloc[0]
 
                 novel_entry = {
+                    'ACCIO_Plasmids': 'novel_plasmid',
                     'plasmid_id': plasmid_id,
                     'cluster_id': 'novel',
                     'pling_type': 'novel',
@@ -659,6 +747,10 @@ class PlasmidAnalysisWorkflow:
                     'num_contigs': len(plasmid_contigs),
                     'contig_ids': [c.id for c in plasmid_contigs],
                     'rep_type': ','.join(sorted(list(rep_types))),
+                    'contig_amr_genes': ','.join(set(
+                        gene for c in plasmid_contigs if c.amr_genes
+                        for gene in c.amr_genes
+                    )),
                     'mob_plasmid_id': rep_row.get('plasmid_id'),
                     'mob_cluster_id': rep_row.get('primary_cluster_id'),
                     'mob_rep_types': rep_row.get('rep_type(s)'),
@@ -666,13 +758,17 @@ class PlasmidAnalysisWorkflow:
                     'mob_mash_dist': rep_row.get('mash_dist'),
                 }
                 plasmid_data.append(novel_entry)
+        if mob_results.empty:
+            none_novel = {'ACCIO_Plasmids': 'novel_plasmids_found', 'plasmid_id': None, 'cluster_id': None, 'pling_type': None, 'contig_ids': []}
+            plasmid_data.append(none_novel)
         novel_unclass_contigs = list(set([c.id for c in novel_contigs]) - set(mob_plasmid_contigs.contig_id.tolist())) if not mob_contigs.empty else set([c.id for c in novel_contigs])
         if novel_unclass_contigs and len(novel_unclass_contigs) > 0:
             # Fallback if MOB-recon fails but novel contigs are found
             
             novel_unclass_contigs = [c for c in novel_contigs if c.id in novel_unclass_contigs]
             novel_entry = {
-                'plasmid_id': 'novel_plasmid_1',
+                'ACCIO_Plasmids': 'unmatched_novel_plasmid',
+                'plasmid_id': 'unmatched_plasmid_contigs',
                 'cluster_id': 'novel',
                 'pling_type': 'novel',
                 'length': sum(c.length for c in novel_unclass_contigs),
@@ -681,6 +777,10 @@ class PlasmidAnalysisWorkflow:
                 'rep_type': ','.join(set(
                     rep for c in novel_unclass_contigs if c.rep_types
                     for rep in c.rep_types
+                )),
+                'contig_amr_genes': ','.join(set(
+                    gene for c in novel_unclass_contigs if c.amr_genes
+                    for gene in c.amr_genes
                 ))
             }
             plasmid_data.append(novel_entry)
@@ -688,10 +788,15 @@ class PlasmidAnalysisWorkflow:
 
         # Write plasmid summary
 
-        if True: #plasmid_data:
+        if plasmid_data:
+            
             plasmid_file = output_dir_path / FilePatterns.PLASMID_DATA_OUTPUT.format(sample=sample_name)
 
-            pd.DataFrame(plasmid_data).to_csv(str(plasmid_file), index=False)
+            plasmid_data = pd.DataFrame(plasmid_data)
+            cols = plasmid_data.columns.tolist()
+            first_cols = ['ACCIO_Plasmids', 'plasmid_id', 'cluster_id', 'pling_type'] 
+            col_order = first_cols + [col for col in cols if col not in first_cols]
+            plasmid_data[col_order].to_csv(str(plasmid_file), index=False)
             output_files['plasmids'] = str(plasmid_file)
         
             
@@ -709,14 +814,15 @@ class PlasmidAnalysisWorkflow:
         pd.DataFrame(contig_data).to_csv(str(contig_file), index=False)
         output_files['contigs'] = str(contig_file)
         
-        if plasmid_data:
-            for row in plasmid_data:
+        if len(plasmid_data) > 0 and not plasmid_data.empty:
+            for idx, row in plasmid_data.iterrows():
                 seqs = []
                 for contig_id in row['contig_ids']:
                     seqs.append(contigs[contig_id].seq)
-                fasta_output = output_dir_path / f"{sample_name}_plasmid_{row['pling_type']}_contigs.fasta"
+                output_plasmid_name = row['pling_type'] if row['pling_type'] != 'novel' else row['plasmid_id']
+                fasta_output = output_dir_path / f"{sample_name}_plasmid_{output_plasmid_name}_contigs.fasta"
                 SeqIO.write(seqs, str(fasta_output), 'fasta')
-                output_files[f"plasmid_{row['pling_type']}_seq"] = str(fasta_output)
+                output_files[f"plasmid_{output_plasmid_name}_seq"] = str(fasta_output)
 
         return output_files
 
@@ -740,6 +846,7 @@ class PlasmidAnalysisWorkflow:
         novel_contigs = novel_results.get('contigs', [])
         
         return {
+            'plasmid_db_used': self.config.plasmid_db,
             'num_plasmids_assigned': len(assigned_plasmids),
             'num_novel_plasmid_contigs': len(novel_contigs),
             'assigned_plasmid_ids': [p.id for p in assigned_plasmids],
