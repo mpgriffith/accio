@@ -7,6 +7,7 @@ import subprocess
 import io
 import os
 import time
+import logging
 from typing import Optional, Dict, List, Any, Union, Tuple
 from intervaltree import IntervalTree
 from Bio import SeqIO
@@ -652,9 +653,17 @@ class Plasmid:
         if config is None:
             config = AnalysisConfig()
             
+        self.use_minimap = getattr(config, 'USE_MINIMAP', False)
+        self.mapping_preset = getattr(config, 'MAPPING_PRESET', None)
+        self.reads_support_only = getattr(config, 'READS_SUPPORT_ONLY', False)
+        self.support_min_depth_short = getattr(config, 'SUPPORT_MIN_DEPTH_SHORT', 10)
+        self.support_min_coverage_short = getattr(config, 'SUPPORT_MIN_COVERAGE_SHORT', 95.0)
+        self.support_min_depth_long = getattr(config, 'SUPPORT_MIN_DEPTH_LONG', 5)
+        self.support_min_coverage_long = getattr(config, 'SUPPORT_MIN_COVERAGE_LONG', 90.0)
+            
         # Determine weights based on data availability
         if weights is None:
-            if self.read_cov_data is not None:
+            if self.read_cov_data is not None and not getattr(config, 'READS_SUPPORT_ONLY', False):
                 weights = config.SCORING_WEIGHTS_WITH_READS
             else:
                 weights = config.SCORING_WEIGHTS_NO_READS
@@ -666,7 +675,7 @@ class Plasmid:
         self.mash_score = mash_score
         
         # Calculate read-based scores if available
-        if self.read_cov_data is not None:
+        if self.read_cov_data is not None and not getattr(config, 'READS_SUPPORT_ONLY', False):
             read_score, pct_cov, gap_reads, gap_len = self.calc_read_score()
             self.scores.update({
                 'read_gaps_score': read_score,
@@ -715,6 +724,75 @@ class Plasmid:
                 contig_amr[contig_id] = self.contigs[contig_id].amr_genes
         return contig_amr
 
+    def calculate_read_support(self, use_minimap: bool = False, mapping_preset: Optional[str] = None,
+                              min_depth_short: Optional[int] = None, min_coverage_short: Optional[float] = None,
+                              min_depth_long: Optional[int] = None, min_coverage_long: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Calculate read support metrics (coverage % and mean depth) for the plasmid.
+        """
+        logger = logging.getLogger(__name__)
+        
+        if not self.read_cov_data:
+            return {
+                'read_support_pct': None,
+                'read_support_mean_depth': None,
+                'read_support': None
+            }
+            
+        is_long_reads = False
+        if use_minimap:
+            if mapping_preset == 'sr':
+                is_long_reads = False
+            else:
+                is_long_reads = True
+                
+        # Resolve thresholds
+        min_d_short = min_depth_short if min_depth_short is not None else getattr(self, 'support_min_depth_short', 10)
+        min_c_short = min_coverage_short if min_coverage_short is not None else getattr(self, 'support_min_coverage_short', 95.0)
+        min_d_long = min_depth_long if min_depth_long is not None else getattr(self, 'support_min_depth_long', 5)
+        min_c_long = min_coverage_long if min_coverage_long is not None else getattr(self, 'support_min_coverage_long', 90.0)
+                
+        try:
+            logger.info(f"Calculating read support for plasmid {self.id}")
+            # count_coverage returns a tuple of 4 arrays/lists: (A, C, G, T)
+            coverage = self.read_cov_data.count_coverage(self.id)
+            depths = [coverage[0][i] + coverage[1][i] + coverage[2][i] + coverage[3][i] for i in range(self.length)]
+        except Exception as e:
+            logger.warning(f"Failed to calculate read support for plasmid {self.id}: {e}")
+            return {
+                'read_support_pct': None,
+                'read_support_mean_depth': None,
+                'read_support': False
+            }
+            
+        total_positions = self.length
+        if total_positions == 0:
+            return {
+                'read_support_pct': 0.0,
+                'read_support_mean_depth': 0.0,
+                'read_support': False
+            }
+            
+        mean_depth = sum(depths) / total_positions
+        
+        # Depth threshold
+        if is_long_reads:
+            covered_positions = sum(1 for d in depths if d > min_d_long)
+        else:
+            covered_positions = sum(1 for d in depths if d >= min_d_short)
+            
+        pct_covered = (covered_positions / total_positions) * 100
+        
+        # Support threshold
+        support_threshold = min_c_short if not is_long_reads else min_c_long
+        supported = pct_covered > support_threshold
+        
+        return {
+            'read_support_pct': pct_covered,
+            'read_support_mean_depth': mean_depth,
+            'read_support': supported
+        }
+
     def get_summary(self) -> Dict[str, Any]:
         """
         Get comprehensive summary of this plasmid's analysis.
@@ -722,6 +800,10 @@ class Plasmid:
         Returns:
             Dictionary containing plasmid summary information
         """
+        read_support_metrics = self.calculate_read_support(
+            use_minimap=getattr(self, 'use_minimap', False),
+            mapping_preset=getattr(self, 'mapping_preset', None)
+        )
         return {
             'plasmid_id': self.id,
             'pling_type': self.pling_type,
@@ -733,8 +815,9 @@ class Plasmid:
             'num_contigs': len(self.contigs),
             'contig_ids': list(self.contigs.keys()),
             'contig_amr_genes': self.get_contig_amr_genes(),
-            'final_score': self.score,
+            'final_score': self.score,  
             **self.scores,
+            **read_support_metrics,
             **self.other
         }
 

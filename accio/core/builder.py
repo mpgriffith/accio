@@ -48,7 +48,7 @@ class DatabaseBuilder:
                       input_files: List[str],
                       output_dir: str,
                       metadata_file: Optional[str] = None,
-                      update_existing: bool = False,
+                      update_existing: Optional[str] = None,
                       min_size: int = 10000,
                       max_size: int = 10000000,
                       check_circular: bool = True,
@@ -88,9 +88,21 @@ class DatabaseBuilder:
         # Load existing data if updating
         existing_sequences = {}
         existing_metadata = pd.DataFrame()
-        if update_existing and os.path.exists(output_dir):
-            existing_sequences, existing_metadata = self._load_existing_database(output_dir)
-            self.logger.info(f"Loaded {len(existing_sequences)} existing sequences")
+        if update_existing:
+            if os.path.exists(update_existing):
+                existing_sequences, existing_metadata = self._load_existing_database(str(update_existing))
+                self.logger.info(f"Loaded {len(existing_sequences)} existing sequences")
+                if not existing_metadata.empty and 'pling_type' in existing_metadata.columns:
+                    prev_db_name = Path(update_existing).resolve().name
+                    if not prev_db_name or prev_db_name in ['.', '..']:
+                        prev_db_name = 'previous_db'
+                    new_col_name = f"{prev_db_name}_pling_type"
+                    if new_col_name in existing_metadata.columns:
+                        existing_metadata = existing_metadata.drop(columns=[new_col_name])
+                    existing_metadata = existing_metadata.rename(columns={'pling_type': new_col_name})
+            else:
+                self.logger.error(f"Previous database directory does not exist: {update_existing}")
+                raise ValueError(f"Previous database directory does not exist: {update_existing}")
         
         #if not update_existing:
         self.download_plasmidfinder(output_dir)
@@ -128,10 +140,15 @@ class DatabaseBuilder:
             SeqIO.write(plasmids.values(), temp_plasmids_file, 'fasta')
             plasmids_fasta_path = temp_plasmids_file.name
 
+        # Write all combined unclustered plasmids to plasmids_before_clustering.fasta in output_dir
+        before_clustering_path = os.path.join(output_dir, "plasmids_before_clustering.fasta")
+        with open(before_clustering_path, 'w') as f:
+            SeqIO.write(plasmids.values(), f, 'fasta')
+
         #if no_cluster == True:
         rep_plasmids, cluster_info = self.cluster_plasmids_skani(
                 plasmids_fasta_path, output_path, sim_threshold=cluster_threshold, skip_cluster=no_cluster,
-                update=update_existing
+                update=bool(update_existing)
             )
         
         # Process and merge metadata from all sources
@@ -140,7 +157,17 @@ class DatabaseBuilder:
         metadata_df = self._merge_cluster_info(metadata_df, cluster_info, mob_df, plasmidfinder_results, amrfinder_results)
         self.logger.info("\n" + metadata_df.head().to_string())
         metadata_df.to_csv(output_dir + '/plasmid_db_before_pling.csv')
-        metadata_df = self._create_plasmid_communities(rep_plasmids, metadata_df, output_dir)
+        previous_pling_dir = None
+        if update_existing:
+            potential_pling_dir = Path(update_existing) / 'pling'
+            prev_typing_file = potential_pling_dir / 'dcj_thresh_4_graph' / 'objects' / 'typing.tsv'
+            if potential_pling_dir.exists() and prev_typing_file.exists():
+                previous_pling_dir = str(potential_pling_dir)
+                self.logger.info(f"Found previous Pling directory: {previous_pling_dir}")
+            else:
+                self.logger.warning(f"Previous Pling directory or typing.tsv not found in {potential_pling_dir}. Running Pling from scratch.")
+
+        metadata_df = self._create_plasmid_communities(rep_plasmids, metadata_df, output_dir, previous_pling_dir=previous_pling_dir)
 
         metadata_df = self._run_mob_cluster(rep_plasmids, metadata_df, mob_typer_file, output_dir)
         
@@ -176,10 +203,12 @@ class DatabaseBuilder:
         fasta_path = os.path.join(db_dir, "plasmids_before_clustering.fasta")
         if os.path.exists(fasta_path):
             sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, "fasta"))
+            self.logger.info(f"Loading {len(sequences)} existing plasmid sequences from {db_dir}")
         else:
             fasta_path = os.path.join(db_dir, "plasmidDB.fasta")
             if os.path.exists(fasta_path):
                 sequences = SeqIO.to_dict(SeqIO.parse(fasta_path, "fasta"))
+                self.logger.info(f"Loading {len(sequences)} existing plasmid sequences from {db_dir}")
             
         # Load metadata
         metadata_path = os.path.join(db_dir, "plasmidDB_info.csv")
@@ -833,7 +862,8 @@ class DatabaseBuilder:
     
 
     def _create_plasmid_communities(self, sequences: Dict[str, SeqRecord], 
-                                    metadata_df: pd.DataFrame, output_dir: str) -> pd.DataFrame:
+                                    metadata_df: pd.DataFrame, output_dir: str,
+                                    previous_pling_dir: Optional[str] = None) -> pd.DataFrame:
         pling_runner = PlingRunner()
         pling_dir = str(Path(output_dir) / 'pling')
         fasta_dir = Path(output_dir) / 'fastas'
@@ -843,8 +873,8 @@ class DatabaseBuilder:
         fasta_path_file = Path(output_dir) / 'pling_fasta_paths.txt'
         with open(fasta_path_file, 'w') as f:
             f.write('\n'.join([str(fasta_dir / f'{seq.id}.fasta') for seq in sequences]))
-        pling_runner.run_pling(str(fasta_path_file), pling_dir, pling_args='--containment_distance 0.3')
-        new_dcj_types_dir = pling_runner.edit_dcj(metadata_df)
+        pling_runner.run_pling(str(fasta_path_file), pling_dir, pling_args='--containment_distance 0.3', previous_pling_dir=previous_pling_dir)
+        new_dcj_types_dir = pling_runner.edit_dcj(metadata_df, previous_pling_dir=previous_pling_dir)
         
         # Assuming edit_dcj returns the path to the new typing results directory
         typing_file = Path(new_dcj_types_dir) / 'objects' / 'typing.tsv'

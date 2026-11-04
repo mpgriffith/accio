@@ -111,7 +111,7 @@ accio create my_plasmids.fasta -o database
 accio create plasmids/ -o database --recursive --deduplicate --validate_sequences --metadata info.csv
 
 # Update existing database
-accio create new_plasmids.fasta -o existing_database --update
+accio create new_plasmids.fasta -o updated_database --update previous_database
 ```
 
 ### `accio check` - System Verification

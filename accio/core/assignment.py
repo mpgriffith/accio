@@ -320,8 +320,8 @@ def calculate_assignment_confidence(plasmid: Plasmid) -> float:
     else:
         factors.append(0.05)
         
-    # Read data increases confidence if available
-    if plasmid.read_cov_data is not None:
+    # Read data increases confidence if available and not used for support only
+    if plasmid.read_cov_data is not None and not getattr(plasmid, 'reads_support_only', False):
         if plasmid.scores['read_gaps_score'] > 0.8:
             factors.append(0.1)
         else:

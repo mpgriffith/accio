@@ -121,8 +121,17 @@ class PlasmidAnalysisWorkflow:
             assignment_results, novel_results, contigs, 
             output_dir, sample_name
         )
+        
+        # Close BAM file handles before cleanup to prevent Windows file locking issues
+        for p in list(plasmids.values()) + assignment_results.get('plasmids_assigned', []):
+            if hasattr(p, 'read_cov_data') and p.read_cov_data is not None:
+                try:
+                    p.read_cov_data.close()
+                    p.read_cov_data = None
+                except Exception as e:
+                    self.logger.warning(f"Failed to close BAM file handle for plasmid {p.id}: {e}")
+
         if not self.logger.isEnabledFor(logging.DEBUG) and not keep_intermediate:
-            
             self._clean_up_files(output_dir, output_files.values())
 
         return {
@@ -538,6 +547,12 @@ class PlasmidAnalysisWorkflow:
                             plasmid.id, plasmid.cluster_id, plasmid.pling_type, plasmid.length,
                             plasmid.plasmid_db_mash, plasmid.other, plasmid.rep_type, plasmid.amr_genes
                         )
+                        if plasmid.read_cov_data is not None:
+                            test_plasmid.add_read_data(
+                                mash_data=pd.DataFrame(),
+                                cov_data=plasmid.read_cov_data,
+                                median_depth=plasmid.median_read_depth
+                            )
                         test_plasmid.add_contigs(contig)
                         test_plasmid.calc_scores(config=self.config)
                         
@@ -813,7 +828,7 @@ class PlasmidAnalysisWorkflow:
         contig_file = output_dir_path / FilePatterns.CONTIG_DATA_OUTPUT.format(sample=sample_name)
         pd.DataFrame(contig_data).to_csv(str(contig_file), index=False)
         output_files['contigs'] = str(contig_file)
-        
+        output_files['log'] =  str(output_dir_path / f'{sample_name}_accio.log')
         if len(plasmid_data) > 0 and not plasmid_data.empty:
             for idx, row in plasmid_data.iterrows():
                 seqs = []

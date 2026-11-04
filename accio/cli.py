@@ -15,7 +15,7 @@ from .core.workflow import PlasmidAnalysisWorkflow
 from .core.builder import DatabaseBuilder
 
 
-def setup_logging(log_level: str = 'INFO', log_file: Optional[str] = None) -> None:
+def setup_logging(log_level: str = 'INFO', log_file: Optional[str] = None, stdout=True) -> None:
     """Set up logging configuration."""
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
@@ -37,7 +37,7 @@ def setup_logging(log_level: str = 'INFO', log_file: Optional[str] = None) -> No
         file_handler = logging.FileHandler(log_file, mode='w') # 'w' to overwrite for each run
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
-    else:
+    if stdout:
         # Add a stream handler to stdout if no file is specified
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setFormatter(formatter)
@@ -159,6 +159,40 @@ def add_find_analyses_parsers(parser):
     )
     
     analysis_group.add_argument(
+        '--reads_support_only',
+        action='store_true',
+        help='Only use reads for support calculation, not for choosing the plasmid (gap_score)'
+    )
+    
+    analysis_group.add_argument(
+        '--support_min_depth_short',
+        type=int,
+        default=10,
+        help='Minimum depth threshold for short read support calculation (default: 10)'
+    )
+    
+    analysis_group.add_argument(
+        '--support_min_coverage_short',
+        type=float,
+        default=95.0,
+        help='Minimum percent coverage threshold for short read support calculation (default: 95.0)'
+    )
+    
+    analysis_group.add_argument(
+        '--support_min_depth_long',
+        type=int,
+        default=5,
+        help='Minimum depth threshold for long read support calculation (default: 5)'
+    )
+    
+    analysis_group.add_argument(
+        '--support_min_coverage_long',
+        type=float,
+        default=90.0,
+        help='Minimum percent coverage threshold for long read support calculation (default: 90.0)'
+    )
+    
+    analysis_group.add_argument(
         '--min_identity',
         type=float,
         default=75,
@@ -260,7 +294,7 @@ Examples:
     accio create /path/to/plasmid_fastas/ -o database_dir --recursive
     
     # Update existing database
-    accio create new_plasmids.fasta -o existing_db_dir --update
+    accio create new_plasmids.fasta -o new_db_dir --update previous_db_dir
         """
     )
     
@@ -283,8 +317,9 @@ Examples:
     
     db_group.add_argument(
         '--update',
-        action='store_true',
-        help='Update existing database instead of creating new one'
+        required=False,
+        default=None,
+        help='Path to previous accio db directory to update from'
     )
     
     db_group.add_argument(
@@ -378,6 +413,7 @@ def add_collate_parser(subparsers) -> None:
     collate_parser = subparsers.add_parser('collate', help='Combine results from multiple genomes')
     collate_parser.add_argument('input_pattern', help='Glob pattern for input files (e.g., "results/*/*_plasmids_chosen.csv")')
     collate_parser.add_argument('-o', '--output', required=True, help='Output file for combined results (e.g., summary.csv)')
+    collate_parser.add_argument('-d', '--database', required=False, help='Path to the database directory to use for collation communities')
 
 def add_query_parser(subparsers) -> None:
     """Add the 'query' subcommand parser"""
@@ -407,9 +443,9 @@ def handle_find_command(args: argparse.Namespace) -> int:
         os.makedirs(args.output, exist_ok=True)
     # Set up logging for this specific find command
     log_file = args.log_file
-    if not log_file:
-        # Create a default log file in the output directory
-        log_file = Path(args.output) / f"{sample_name}_accio.log"
+    #if not log_file:
+    #     # Create a default log file in the output directory
+    log_file = Path(args.output) / f"{sample_name}_accio.log"
 
     # Reconfigure logging for this specific run
     log_level = args.log_level if hasattr(args, 'log_level') else 'INFO'
@@ -433,7 +469,7 @@ def handle_find_command(args: argparse.Namespace) -> int:
             logger.error(f"Database directory does not exist: {args.database}")
             return 1
         
-        # Check prerequisites
+        # Check prerequisites   
         logger.info("Checking system requirements...")
         tool_availability = check_tool_availability()
         essential_tools = ['blastn', 'mash', 'nucmer', 'show-coords', 'samtools']
@@ -473,6 +509,15 @@ def handle_find_command(args: argparse.Namespace) -> int:
         config.plasmid_db = args.database # Explicitly set the database path in config
 
         config.USE_PLING_COMMUNITY_COUNTS = args.use_pling_type_counts
+        
+        # Set read support/mapping configs
+        config.READS_SUPPORT_ONLY = args.reads_support_only
+        config.USE_MINIMAP = args.minimap2
+        config.MAPPING_PRESET = args.mapping_preset
+        config.SUPPORT_MIN_DEPTH_SHORT = args.support_min_depth_short
+        config.SUPPORT_MIN_COVERAGE_SHORT = args.support_min_coverage_short
+        config.SUPPORT_MIN_DEPTH_LONG = args.support_min_depth_long
+        config.SUPPORT_MIN_COVERAGE_LONG = args.support_min_coverage_long
         
         if args.circular_only:
             config.CIRCULAR_ONLY = True
@@ -540,9 +585,9 @@ def handle_create_command(args: argparse.Namespace) -> int:
                 return 1
             
         # Check if output directory exists
-        if os.path.exists(args.output) and not args.update and not args.force:
+        if os.path.exists(args.output)  and not args.force:
             logger.error(f"Output directory exists: {args.output}")
-            logger.error("Use --update to add to existing database or --force to overwrite")
+            logger.error("Use --force to overwrite")
             return 1
             
         # Create output directory
@@ -768,7 +813,8 @@ def handle_multi_command(args: argparse.Namespace) -> int:
     
     collate_args = argparse.Namespace(
         input_pattern=collate_pattern,
-        output=str(collate_output)
+        output=str(collate_output),
+        database=args.database
     )
     handle_combine_command(collate_args)
     return 0
@@ -778,6 +824,15 @@ def handle_combine_command(args: argparse.Namespace) -> int:
     logger = logging.getLogger(__name__)
     results_files = glob.glob(args.input_pattern, recursive=True)
     
+    collation_df = None
+    database_arg = getattr(args, 'database', None)
+    if database_arg:
+        collation_db = Path(database_arg).resolve()
+        collation_info_file = collation_db / 'plasmidDB_info.csv'
+        if not collation_info_file.exists():
+            raise FileNotFoundError(f"Database info file not found: {collation_info_file}")
+        collation_df = pd.read_csv(collation_info_file).set_index('plasmid_id')
+
     all_dfs = []
     for f in results_files:
         try:
@@ -785,10 +840,88 @@ def handle_combine_command(args: argparse.Namespace) -> int:
             sample_name = Path(f).stem.split('_plasmids_chosen')[0]
             print(sample_name)
             df['Sample'] = sample_name
-            #df.columns = ['Sample'] + list(df.columns[:-1])
             col_to_move = df.pop('Sample')
             df.insert(0, 'Sample', col_to_move)
             print(df.head(5))
+            
+            if collation_df is not None:
+                # 1. Locate log file
+                parent_dir = Path(f).parent
+                log_files = list(parent_dir.glob("*_accio.log"))
+                if not log_files:
+                    raise FileNotFoundError(f"No log file (*_accio.log) found in directory {parent_dir}")
+                
+                # 2. Extract database used from log file
+                db_used = None
+                with open(log_files[0], 'r') as log_f:
+                    for line in log_f:
+                        if 'Using database:' in line:
+                            db_used = line.split('Using database:')[-1].strip()
+                            break
+                if not db_used:
+                    raise ValueError(f"Could not determine the database used from the log file: {log_files[0]}")
+                
+                db_used_path = Path(db_used).resolve()
+                collation_db_path = Path(database_arg).resolve()
+                
+                # 3. Check if databases are different and do mapping
+                if db_used_path != collation_db_path:
+                    # Find previous pling column
+                    prev_db_name = db_used_path.name
+                    previous_pling_col = f"{prev_db_name}_pling_type"
+                    if previous_pling_col not in collation_df.columns:
+                        cols = [c for c in collation_df.columns if c.endswith('_pling_type') and c != 'pling_type']
+                        if cols:
+                            previous_pling_col = cols[0]
+                        else:
+                            previous_pling_col = None
+                    
+                    if previous_pling_col is None or previous_pling_col not in collation_df.columns:
+                        raise ValueError(f"Database {collation_db_path} is not compatible with database used in find: {db_used_path}. "
+                                         f"Could not find previous pling column in collation database.")
+                    
+                    # Update pling_type column based on collation_df
+                    new_pling_types = []
+                    for idx, row in df.iterrows():
+                        pid = row['plasmid_id']
+                        aid = row['ACCIO_Plasmids']
+                        if pd.isna(pid) or str(aid) == 'novel_plasmid' or str(pid) == 'unmatched_plasmid_contigs':
+                            new_pling_types.append(row['pling_type'])
+                        else:
+                            if pid not in collation_df.index:
+                                raise ValueError(f"Plasmid ID '{pid}' from results in {f} not found in collation database. Databases are not compatible.")
+                            
+                            recorded_old_pling = row['pling_type']
+                            actual_old_pling = collation_df.loc[pid, previous_pling_col]
+                            if isinstance(actual_old_pling, pd.Series):
+                                actual_old_pling = actual_old_pling.iloc[0]
+                            
+                            if pd.notna(recorded_old_pling) and pd.notna(actual_old_pling) and str(recorded_old_pling) != str(actual_old_pling):
+                                raise ValueError(f"Incompatible databases: Plasmid '{pid}' has subcommunity '{recorded_old_pling}' in results, "
+                                                 f"but '{actual_old_pling}' in collation database's previous pling column '{previous_pling_col}'.")
+                            
+                            val = collation_df.loc[pid, 'pling_type']
+                            if isinstance(val, pd.Series):
+                                val = val.iloc[0]
+                            new_pling_types.append(val)
+                    df['pling_type'] = new_pling_types
+                else:
+                    # Same database - update pling_type from collation_df just to be consistent
+                    new_pling_types = []
+                    for idx, row in df.iterrows():
+                        pid = row['plasmid_id']
+                        aid = row['ACCIO_Plasmids']
+                        if pd.isna(pid) or str(aid) == 'novel_plasmid' or str(pid) == 'unmatched_plasmid_contigs':
+                            new_pling_types.append(row['pling_type'])
+                        else:
+                            if pid not in collation_df.index:
+                                raise ValueError(f"Plasmid ID '{pid}' from results in {f} not found in database. Databases are not compatible.")
+                            val = collation_df.loc[pid, 'pling_type']
+                            if isinstance(val, pd.Series):
+                                val = val.iloc[0]
+                            new_pling_types.append(val)
+                    df['pling_type'] = new_pling_types
+            
             all_dfs.append(df)
         except pd.errors.EmptyDataError:
             logger.warning(f"Skipping empty file {f}")
@@ -815,6 +948,7 @@ def main() -> int:
         return 1
     
     # Set up logging
+    
     setup_logging(args.log_level, args.log_file)
     logger = logging.getLogger(__name__)
     

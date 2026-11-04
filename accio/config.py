@@ -99,6 +99,15 @@ class AnalysisConfig:
     PLASME_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for PLASMe plasmid score
     CLASSIFIER = 'plasme'  # choices: 'plasme', 'genomad', 'both'
     
+    # Read mapping and support configurations
+    READS_SUPPORT_ONLY = False
+    USE_MINIMAP = False
+    MAPPING_PRESET = None
+    SUPPORT_MIN_DEPTH_SHORT = 10
+    SUPPORT_MIN_COVERAGE_SHORT = 95.0
+    SUPPORT_MIN_DEPTH_LONG = 5
+    SUPPORT_MIN_COVERAGE_LONG = 90.0
+    
     MIN_READ_DEPTH_FACTOR = 0.25
     DCJ_THRESHOLD=0.05
     DCJ_THRESHOLD_LEN = 120000
