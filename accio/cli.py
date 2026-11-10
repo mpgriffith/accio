@@ -571,7 +571,7 @@ def handle_find_command(args: argparse.Namespace) -> int:
         #     essential_tools.extend(['bwa', 'bwa-mem2'])
             
         missing_tools = [tool for tool in essential_tools 
-                        if not tool_availability.get(tool, False)]
+                        if not tool_availability.get(tool, {}).get('available', False)]
         
         if missing_tools:
             logger.error(f"Missing essential tools: {', '.join(missing_tools)}")
@@ -690,7 +690,7 @@ def handle_create_command(args: argparse.Namespace) -> int:
         tool_availability = check_tool_availability()
         required_tools = ['makeblastdb', 'mash']
         missing_tools = [tool for tool in required_tools 
-                        if not tool_availability.get(tool, False)]
+                        if not tool_availability.get(tool, {}).get('available', False)]
         
         if missing_tools:
             logger.error(f"Missing required tools: {', '.join(missing_tools)}")
@@ -795,8 +795,9 @@ def handle_check_command(args: argparse.Namespace) -> int:
         
         # Group tools by category
         essential_tools = ['blastn', 'makeblastdb', 'mash', 'nucmer', 'show-coords', 'samtools']
-        mapping_tools = ['bwa', 'minimap2'] # bwa-mem2 is often separate
-        optional_tools = ['PLASMe.py', 'mob_recon', 'bwa-mem2']
+        database_tools = ['skani', 'amrfinder', 'mob_typer', 'mob_cluster', 'pling', 'plasnet']
+        mapping_tools = ['bwa', 'minimap2']
+        optional_tools = ['genomad', 'PLASMe.py', 'mob_recon', 'bwa-mem2']
         
         def check_tool_group(tools: List[str], group_name: str) -> bool:
             print(f"\n  {group_name}:")
@@ -808,13 +809,16 @@ def handle_check_command(args: argparse.Namespace) -> int:
                     print(f"    {status} {tool}")
                     if not info['available']:
                         print(f"       └─ Install with: {info['install_hint']}")
-                        if tool in essential_tools:
-                            all_available = False
+                        all_available = False
+                else:
+                    print(f"    ❓ {tool} (status unknown)")
+                    all_available = False
             return all_available
         
-        essential_ok = check_tool_group(essential_tools, "Essential tools")
+        essential_ok = check_tool_group(essential_tools, "Essential analysis tools")
+        db_ok = check_tool_group(database_tools, "Database creation & typing tools")
         check_tool_group(mapping_tools, "Read mapping tools")
-        check_tool_group(optional_tools, "Optional tools")
+        check_tool_group(optional_tools, "Classifier & optional tools")
         
         if not essential_ok:
             print(f"\n❌ Some essential tools are missing!")
@@ -976,7 +980,16 @@ def handle_multi_command(args: argparse.Namespace) -> int:
             job_args.reads = None
 
         jobs_to_run.append(job_args)
-    num_parallel = int(args.threads / 8) if args.threads >=8 else 1
+
+    total_threads = getattr(args, 'threads', 16) or 16
+    num_parallel = max(1, total_threads // 8) if total_threads >= 8 else 1
+    num_parallel = min(num_parallel, len(jobs_to_run)) if jobs_to_run else 1
+    threads_per_sample = max(1, total_threads // num_parallel)
+
+    for job in jobs_to_run:
+        job.threads = threads_per_sample
+
+    logger.info(f"Running multi-analysis with {num_parallel} parallel worker(s), {threads_per_sample} thread(s) per worker (total threads: {total_threads})")
     # Run jobs in parallel
     with multiprocessing.Pool(processes=num_parallel) as pool:
         pool.map(handle_find_command, jobs_to_run)

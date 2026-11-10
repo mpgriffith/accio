@@ -2,6 +2,7 @@
 
 import subprocess
 import shlex
+import shutil
 import os
 import io
 import pandas as pd
@@ -99,9 +100,12 @@ class BLASTRunner:
         if title:
             cmd += ['-title', title]
         try:
-            subprocess.run(cmd)
-        except:
-            raise ExternalToolError(f"makeblastdb failed: {str(e)}")
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.decode() if e.stderr else str(e)
+            raise ExternalToolError(f"makeblastdb failed: {error_msg}")
+        except Exception as e:
+            raise ExternalToolError(f"makeblastdb execution error: {str(e)}")
 
 
 class MashRunner:
@@ -586,19 +590,25 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
     """
     tools = {
         'blastn': {'cmd': 'blastn -version', 'install': 'conda install -c bioconda blast'},
+        'makeblastdb': {'cmd': 'makeblastdb -version', 'install': 'conda install -c bioconda blast'},
         'mash': {'cmd': 'mash --version', 'install': 'conda install -c bioconda mash'},
-        'nucmer': {'cmd': 'nucmer --version', 'install': 'conda install -c bioconda mummer'},
-        'show-coords': {'cmd': 'show-coords -h', 'install': 'conda install -c bioconda mummer'},
-        'show-snps': {'cmd': 'show-snps -h', 'install': 'conda install -c bioconda mummer'},
-        'delta-filter': {'cmd': 'delta-filter -h', 'install': 'conda install -c bioconda mummer'},
+        'nucmer': {'cmd': 'nucmer --version', 'install': 'conda install -c bioconda mummer4'},
+        'show-coords': {'cmd': 'show-coords -h', 'install': 'conda install -c bioconda mummer4'},
+        'show-snps': {'cmd': 'show-snps -h', 'install': 'conda install -c bioconda mummer4'},
+        'delta-filter': {'cmd': 'delta-filter -h', 'install': 'conda install -c bioconda mummer4'},
         'bwa': {'cmd': 'bwa', 'install': 'conda install -c bioconda bwa'},
         'bwa-mem2': {'cmd': 'bwa-mem2', 'install': 'conda install -c bioconda bwa-mem2'},
         'minimap2': {'cmd': 'minimap2 --version', 'install': 'conda install -c bioconda minimap2'},
         'samtools': {'cmd': 'samtools --version', 'install': 'conda install -c bioconda samtools'},
-        'PLASMe.py': {'cmd': 'PLASMe.py --help', 'install': 'See PLASMe GitHub for installation instructions.'},
+        'skani': {'cmd': 'skani --version', 'install': 'conda install -c bioconda skani'},
+        'amrfinder': {'cmd': 'amrfinder --version', 'install': 'conda install -c bioconda ncbi-amrfinderplus'},
         'mob_recon': {'cmd': 'mob_recon --version', 'install': 'pip install mob-suite'},
-        'makeblastdb': {'cmd': 'makeblastdb -h', 'install': 'conda install -c bioconda blast'},
+        'mob_typer': {'cmd': 'mob_typer --version', 'install': 'pip install mob-suite'},
+        'mob_cluster': {'cmd': 'mob_cluster --help', 'install': 'pip install mob-suite'},
+        'pling': {'cmd': 'pling --help', 'install': 'conda install -c bioconda pling'},
+        'plasnet': {'cmd': 'plasnet --help', 'install': 'pip install plasnet'},
         'genomad': {'cmd': 'genomad --version', 'install': 'pip install genomad'},
+        'PLASMe.py': {'cmd': 'PLASMe.py --help', 'install': 'See PLASMe GitHub for installation instructions.'},
     }
     
     availability = {}
@@ -608,14 +618,28 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
             'available': False,
             'install_hint': info['install']
         }
+        cmd_parts = shlex.split(info['cmd'])
+        binary = cmd_parts[0]
+        if not shutil.which(binary):
+            continue
+
         try:
-            subprocess.check_output(
-                shlex.split(info['cmd']), 
-                stderr=subprocess.DEVNULL,
+            res = subprocess.run(
+                cmd_parts,
+                capture_output=True,
                 timeout=10
             )
-            availability[tool]['available'] = True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            if res.returncode == 0:
+                availability[tool]['available'] = True
+            elif binary in ['bwa', 'bwa-mem2']:
+                combined = res.stdout + res.stderr
+                if b'Program: bwa' in combined or b'Usage: bwa' in combined:
+                    availability[tool]['available'] = True
+            elif binary in ['show-coords', 'show-snps', 'delta-filter']:
+                combined = res.stdout + res.stderr
+                if binary.encode() in combined or b'USAGE' in combined.upper():
+                    availability[tool]['available'] = True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
             
     return availability

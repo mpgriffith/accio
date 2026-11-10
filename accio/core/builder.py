@@ -16,7 +16,7 @@ from Bio.SeqRecord import SeqRecord
 
 import accio
 from ..wrappers import (BLASTRunner, MashRunner, MOBRunner, PlingRunner, SkaniRunner, AMRRunner)
-from ..config import MOB_TYPER_COLS
+from ..config import MOB_TYPER_COLS, AnalysisConfig
 from ..utils.filters import filter_overlaps
 
 
@@ -37,12 +37,16 @@ class DatabaseBuilder:
         self.max_length = max_length
         self.logger = logging.getLogger(__name__)
         
-        # Initialize tool runners
-        self.blast_runner = BLASTRunner()
-        self.mash_runner = MashRunner()
-        self.mob_runner = MOBRunner()
-        self.skani_runner = SkaniRunner()
-        self.pling_runner = PlingRunner()
+        # Initialize tool runners with configured threads
+        config = AnalysisConfig()
+        config.THREADS = threads
+        self.config = config
+        self.blast_runner = BLASTRunner(config=config)
+        self.mash_runner = MashRunner(config=config)
+        self.mob_runner = MOBRunner(config=config)
+        self.skani_runner = SkaniRunner(config=config)
+        self.pling_runner = PlingRunner(config=config)
+        self.amr_runner = AMRRunner(config=config)
 
     def build_database(self, 
                       input_files: List[str],
@@ -253,7 +257,8 @@ class DatabaseBuilder:
 
 
         # Check if repetitive DB exists in the target directory
-        if not rep_fasta.exists() or not (rep_db_prefix.with_suffix('.nhr')).exists():
+        rep_db_nhr = Path(f"{rep_db_prefix}.nhr")
+        if not rep_fasta.exists() or not rep_db_nhr.exists():
             self.logger.info("Repetitive element BLAST database not found in target directory. Building now...")
             
             shutil.copy(packaged_rep_fasta, rep_fasta)
@@ -344,7 +349,7 @@ class DatabaseBuilder:
     
     def _run_mob_typer(self, sequence_file: str, output_dir: Path):
         """Run Mob Typer on sequences."""
-        mob_runner = MOBRunner()
+        mob_runner = self.mob_runner
         results_file =  str(output_dir / 'mob_typer_results.tsv')
         results_file = mob_runner.run_mob_typer(sequence_file, str(output_dir / 'mob_typer_results.tsv'), multi=True)
         mob_df = pd.read_csv(results_file, sep='\t')
@@ -353,7 +358,7 @@ class DatabaseBuilder:
     
     def _run_amrfinder(self, sequence_file: str, output_dir: Path) -> pd.DataFrame:
         """Run AMRFinder on sequences."""
-        amrfinder_runner = AMRRunner()
+        amrfinder_runner = self.amr_runner
         self.logger.info("Running AMRFinder...")
         results_file = str(output_dir / 'amrfinder_results.tsv')
         results_file = amrfinder_runner.run_amrfinder(sequence_file, str(output_dir / 'amrfinder_results.tsv')) 
@@ -1077,7 +1082,7 @@ class DatabaseBuilder:
                                     run_edit_dcj: Optional[bool] = None,
                                     containment_distance: float = 0.3) -> pd.DataFrame:
         """Create plasmid communities using Pling or pre-computed Pling outputs."""
-        pling_runner = PlingRunner()
+        pling_runner = self.pling_runner
         pling_dir = Path(output_dir) / 'pling'
         new_dcj_types_dir = None
 

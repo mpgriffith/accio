@@ -7,6 +7,7 @@ import subprocess
 import io
 import os
 import time
+import tempfile
 import logging
 from typing import Optional, Dict, List, Any, Union, Tuple
 from intervaltree import IntervalTree
@@ -542,11 +543,13 @@ class Plasmid:
         if not contig_seqs:
             return 0.0
             
-        # Create temporary file for contigs
-        temp_filename = f"{self.id}_{int(time.time())}_remaining_contigs.fasta"
+        # Create unique temporary file for contigs
+        temp_file = tempfile.NamedTemporaryFile(mode='w', prefix=f"accio_mash_{self.id}_", suffix='.fasta', delete=False)
+        temp_filename = temp_file.name
         
         try:
-            SeqIO.write(contig_seqs, temp_filename, 'fasta')
+            SeqIO.write(contig_seqs, temp_file, 'fasta')
+            temp_file.close()
             
             # Run mash screen
             cmd = ['mash', 'screen', self.plasmid_db_mash, temp_filename]
@@ -582,7 +585,10 @@ class Plasmid:
             return 0.0
         finally:
             if os.path.exists(temp_filename):
-                os.remove(temp_filename)
+                try:
+                    os.remove(temp_filename)
+                except OSError:
+                    pass
 
     def calc_read_score(self) -> Tuple[float, float, float, float]:
         """

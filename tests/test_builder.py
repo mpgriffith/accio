@@ -327,3 +327,30 @@ def test_write_database_files(builder, tmp_path):
     assert (output_dir / "plasmidDB_info.csv").exists()
     assert (output_dir / "database_stats.txt").exists()
 
+
+def test_repetitive_db_nhr_detection(tmp_path, monkeypatch):
+    """Test that download_repetitive_db detects repetitive.dna.fas.nhr and does not rebuild."""
+    builder = DatabaseBuilder(threads=4)
+    rep_fasta = tmp_path / 'repetitive.dna.fas'
+    rep_nhr = tmp_path / 'repetitive.dna.fas.nhr'
+    rep_fasta.write_text(">rep\nATCG\n")
+    rep_nhr.write_text("dummy nhr")
+
+    called = []
+    monkeypatch.setattr(builder.blast_runner, 'run_makeblastdb', lambda *args, **kwargs: called.append(True))
+    builder.download_repetitive_db(tmp_path)
+    assert len(called) == 0, "run_makeblastdb should not have been called when repetitive.dna.fas.nhr exists"
+
+
+def test_builder_threads_propagation():
+    """Test that DatabaseBuilder propagates threads to all internal runners."""
+    builder = DatabaseBuilder(threads=8)
+    assert builder.threads == 8
+    assert builder.config.THREADS == 8
+    assert builder.blast_runner.config.THREADS == 8
+    assert builder.mash_runner.config.THREADS == 8
+    assert builder.mob_runner.config.THREADS == 8
+    assert builder.skani_runner.config.THREADS == 8
+    assert builder.pling_runner.config.THREADS == 8
+    assert builder.amr_runner.config.THREADS == 8
+

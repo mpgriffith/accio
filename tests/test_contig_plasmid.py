@@ -110,3 +110,39 @@ def test_plasmid_add_contigs_and_score():
     assert p.scores['length_score'] > 0.9
     assert p.score > 0
 
+
+def test_mash_temp_fasta_uses_tempfile(monkeypatch):
+    """Test that Plasmid.calc_mash_score uses NamedTemporaryFile in tempdir and cleans up."""
+    import os
+    import tempfile
+    p = Plasmid(
+        id="plasmid_test",
+        cluster_id="c1",
+        pling_type="pt1",
+        length=5000,
+        plasmid_mash_db="dummy.msh"
+    )
+    contig = Contig("c1", SeqRecord(Seq("ATGC" * 100), id="c1"))
+    p.contigs["c1"] = contig
+
+    created_files = []
+    real_named_temp = tempfile.NamedTemporaryFile
+
+    def tracking_tempfile(*args, **kwargs):
+        tf = real_named_temp(*args, **kwargs)
+        created_files.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", tracking_tempfile)
+    monkeypatch.setattr(
+        "subprocess.check_output",
+        lambda *args, **kwargs: b"0.98\t450/1000\t1\t0.0\tplasmid_test\tplasmid_test\n"
+    )
+
+    score = p.calc_mash_score()
+    assert abs(score - 0.98) < 1e-4
+    assert len(created_files) == 1
+    temp_path = created_files[0]
+    assert "accio_mash_plasmid_test_" in os.path.basename(temp_path)
+    assert not os.path.exists(temp_path), "Temporary fasta should be deleted in finally block"
+

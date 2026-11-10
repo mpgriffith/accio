@@ -167,3 +167,79 @@ def test_main_module_import():
     import accio.__main__
     assert hasattr(accio.__main__, 'main')
 
+
+def test_essential_tool_check_in_cli(monkeypatch, tmp_path):
+    """Test that missing tools with available=False correctly fail find and create commands."""
+    mock_availability = {
+        'blastn': {'available': False, 'install_hint': 'conda install blast'},
+        'mash': {'available': True, 'install_hint': 'conda install mash'},
+        'nucmer': {'available': True, 'install_hint': 'conda install mummer'},
+        'show-coords': {'available': True, 'install_hint': 'conda install mummer'},
+        'samtools': {'available': True, 'install_hint': 'conda install samtools'},
+        'makeblastdb': {'available': False, 'install_hint': 'conda install blast'},
+    }
+    monkeypatch.setattr("accio.cli.check_tool_availability", lambda: mock_availability)
+
+    # find command
+    find_args = argparse.Namespace(
+        assembly="dummy.fa",
+        database=str(tmp_path),
+        output=str(tmp_path),
+        reads=None,
+        minimap2=False
+    )
+    assert handle_find_command(find_args) == 1
+
+    # create command
+    create_args = argparse.Namespace(
+        inputs=["dummy.fa"],
+        output=str(tmp_path),
+        threads=4,
+        min_length=10000,
+        max_length=1000000
+    )
+    assert handle_create_command(create_args) == 1
+
+
+def test_multi_thread_division(monkeypatch, tmp_path):
+    """Test that handle_multi_command divides total threads among parallel workers."""
+    # Create 4 dummy assembly files
+    sample_dir = tmp_path / "assemblies"
+    sample_dir.mkdir()
+    for i in range(4):
+        (sample_dir / f"sample_{i}.fasta").write_text(f">s{i}\nATGC\n")
+
+    captured_jobs = []
+
+    def mock_map(func, jobs):
+        captured_jobs.extend(jobs)
+        return [0] * len(jobs)
+
+    class MockPool:
+        def __init__(self, processes):
+            self.processes = processes
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def map(self, func, jobs):
+            return mock_map(func, jobs)
+
+    monkeypatch.setattr("multiprocessing.Pool", MockPool)
+    monkeypatch.setattr("accio.cli.handle_combine_command", lambda args: 0)
+
+    multi_args = argparse.Namespace(
+        assemblies=str(sample_dir),
+        assembly=None,
+        database=str(tmp_path),
+        output_dir=str(tmp_path / "multi_out"),
+        reads_dir=None,
+        threads=16
+    )
+
+    handle_multi_command(multi_args)
+    assert len(captured_jobs) == 4
+    # With 16 threads and 4 jobs, num_parallel = 16 // 8 = 2, so threads_per_sample = 16 // 2 = 8
+    for job in captured_jobs:
+        assert job.threads == 8
+
