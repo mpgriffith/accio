@@ -102,11 +102,13 @@ accio create <input> -o <database_dir> [options]
 **Key Options:**
 - `--metadata`: CSV file with plasmid metadata
 - `--pling_dir`: Path to pre-made pling directory to reuse instead of running pling
+- `--containment_distance`: Pling containment distance threshold (default: 0.3)
 - `--skip_edit_dcj`: Skip pling `edit_dcj` step and use base typing directly (works on both new pling runs and with `--pling_dir`)
 - `--run_edit_dcj`: Force running pling `edit_dcj` (requires `communities.pkl` and distance files)
 - `--recursive`: Search directories recursively for FASTA files
-- `--min_length`: Minimum sequence length (default: 1000)
-- `--check_circular`: Detect circular sequences
+- `--min_length`: Minimum sequence length (default: 10000)
+- `--check_circular`: Detect and mark circular sequences (default: off)
+- `--no_plasmid_check`: Do not filter sequences by circularity / plasmid replicon checks
 - `--no_clustering`: Skip clustering step (skani) (false by default)
 
 **Examples:**

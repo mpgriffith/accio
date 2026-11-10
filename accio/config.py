@@ -97,7 +97,7 @@ class AnalysisConfig:
     GENOMAD_DB_PATH = os.environ.get('GENOMAD_DB', 'genomad_db')
     GENOMAD_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for genomad plasmid score
     PLASME_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for PLASMe plasmid score
-    CLASSIFIER = 'plasme'  # choices: 'plasme', 'genomad', 'both'
+    CLASSIFIER = 'genomad'  # choices: 'genomad', 'plasme', 'both', 'none'
     FIND_NOVEL_PLASMIDS = True  # Whether to identify and analyze novel plasmids
     
     # Read mapping and support configurations

@@ -80,6 +80,14 @@ Examples:
     
     parser.add_argument('--log_file', help='Log file path (default: stdout only)')
     
+    import accio
+    parser.add_argument(
+        '-v', '--version',
+        action='version',
+        version=f'%(prog)s {getattr(accio, "__version__", "0.1.0")}',
+        help='Show program version and exit'
+    )
+    
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
     # Add subcommands
@@ -148,103 +156,118 @@ Examples:
     add_find_analyses_parsers(find_parser)
 
 def add_find_analyses_parsers(parser):   
-    # Analysis parameters
-    analysis_group = parser.add_argument_group('Analysis Parameters')
+    # Execution options
+    exec_group = parser.add_argument_group('Execution Options')
     
-    analysis_group.add_argument(
+    exec_group.add_argument(
         '-t', '--threads',
         type=int,
         default=4,
-        help='Number of threads to use (default: 4)'
+        help='Number of threads for parallel processing (default: 4)'
     )
+
+    # Scoring and candidate thresholds
+    scoring_group = parser.add_argument_group('Scoring & Candidate Thresholds')
     
-    analysis_group.add_argument(
-        '--reads_support_only',
-        action='store_true',
-        help='Only use reads for support calculation, not for choosing the plasmid (gap_score)'
-    )
-    
-    analysis_group.add_argument(
-        '--support_min_depth_short',
-        type=int,
-        default=10,
-        help='Minimum depth threshold for short read support calculation (default: 10)'
-    )
-    
-    analysis_group.add_argument(
-        '--support_min_coverage_short',
-        type=float,
-        default=95.0,
-        help='Minimum percent coverage threshold for short read support calculation (default: 95.0)'
-    )
-    
-    analysis_group.add_argument(
-        '--support_min_depth_long',
-        type=int,
-        default=5,
-        help='Minimum depth threshold for long read support calculation (default: 5)'
-    )
-    
-    analysis_group.add_argument(
-        '--support_min_coverage_long',
-        type=float,
-        default=90.0,
-        help='Minimum percent coverage threshold for long read support calculation (default: 90.0)'
-    )
-    
-    analysis_group.add_argument(
-        '--min_identity',
-        type=float,
-        default=75,
-        help='Minimum BLAST identity threshold (default: 75)'
-    )
-    
-    analysis_group.add_argument(
-        '--min_coverage',
-        type=float,
-        default=75,
-        help='Minimum BLAST coverage threshold (default: 75)'
-    )
-    
-    analysis_group.add_argument(
+    scoring_group.add_argument(
         '--min_score',
         type=float,
         default=0.80,
         help='Minimum plasmid assignment score (default: 0.80)'
     )
     
-    analysis_group.add_argument('--min_mash_score',
-                                type=float, default=0.995,
-                                help='Minimum Mash similarity score (default: 0.995)')
-
-    analysis_group.add_argument(
-        '--classifier',
-        choices=['plasme', 'genomad', 'both'],
-        default='plasme',
-        help='Classifier to use for plasmid prediction (default: plasme)'
+    scoring_group.add_argument(
+        '--min_identity',
+        type=float,
+        default=75.0,
+        help='Minimum BLAST identity threshold (default: 75)'
+    )
+    
+    scoring_group.add_argument(
+        '--min_coverage',
+        type=float,
+        default=75.0,
+        help='Minimum BLAST coverage threshold (default: 75)'
+    )
+    
+    scoring_group.add_argument(
+        '--min_mash_score',
+        type=float,
+        default=0.995,
+        help='Minimum Mash similarity score (default: 0.995)'
+    )
+    
+    scoring_group.add_argument(
+        '--circular_only',
+        action='store_true',
+        help='Only consider circular contigs as plasmid candidates'
+    )
+    
+    scoring_group.add_argument(
+        '--use_pling_type_counts',
+        action='store_true',
+        help='Use counts of matching pling types to assign plasmids'
     )
 
-    analysis_group.add_argument(
+    # Classification and novel plasmid detection
+    classifier_group = parser.add_argument_group('Plasmid Classification & Novel Detection')
+    
+    classifier_group.add_argument(
+        '--classifier',
+        choices=['genomad', 'plasme', 'both', 'none'],
+        default='genomad',
+        help='Classifier to use for plasmid prediction (default: genomad)'
+    )
+
+    classifier_group.add_argument(
         '--genomad_db',
         help='Path to the geNomad database directory',
         default=os.environ.get('GENOMAD_DB', 'genomad_db')
     )
 
-    analysis_group.add_argument(
-        '--circular_only',
-        action='store_true',
-        help='Only consider circular contigs as plasmid candidates'
-    )
-    analysis_group.add_argument(
+    classifier_group.add_argument(
         '--skip_novel_plasmids', '--skip-novel-plasmids', '--skip_novel', '--skip-novel',
         action='store_true',
         default=False,
         help='Skip finding and analyzing novel plasmid contigs (skips PLASMe/geNomad and MOB-recon)'
     )
-    analysis_group.add_argument('--use_pling_type_counts', action='store_true',
-                                help='Use counts of matching pling types to assign plasmids')
-    # Read mapping options
-    mapping_group = parser.add_argument_group('Read Mapping Options')
+
+    # Read mapping and support options
+    mapping_group = parser.add_argument_group('Read Mapping & Support Options')
+    
+    mapping_group.add_argument(
+        '--reads_support_only',
+        action='store_true',
+        help='Only use reads for support calculation, not for choosing the plasmid (gap_score)'
+    )
+    
+    mapping_group.add_argument(
+        '--support_min_depth_short',
+        type=int,
+        default=10,
+        help='Minimum depth threshold for short read support calculation (default: 10)'
+    )
+    
+    mapping_group.add_argument(
+        '--support_min_coverage_short',
+        type=float,
+        default=95.0,
+        help='Minimum percent coverage threshold for short read support calculation (default: 95.0)'
+    )
+    
+    mapping_group.add_argument(
+        '--support_min_depth_long',
+        type=int,
+        default=5,
+        help='Minimum depth threshold for long read support calculation (default: 5)'
+    )
+    
+    mapping_group.add_argument(
+        '--support_min_coverage_long',
+        type=float,
+        default=90.0,
+        help='Minimum percent coverage threshold for long read support calculation (default: 90.0)'
+    )
     
     mapping_group.add_argument(
         '--minimap2',
@@ -252,7 +275,6 @@ def add_find_analyses_parsers(parser):
         help='Use minimap2 instead of BWA for read mapping (recommended for long reads)'
     )
     
-
     mapping_group.add_argument(
         '--mapping_preset',
         choices=['sr', 'map-ont', 'map-pb', 'asm5', 'asm10', 'asm20'],
@@ -316,102 +338,134 @@ Examples:
         required=True,
         help='Output directory for database files'
     )
-    
-    # Database options
-    db_group = create_parser.add_argument_group('Database Options')
-    
-    
-    db_group.add_argument(
-        '--update',
-        required=False,
-        default=None,
-        help='Path to previous accio db directory to update from'
-    )
-    
-    db_group.add_argument(
-        '--pling_dir', '--pling-dir',
-        required=False,
-        default=None,
-        help='Path to pre-made pling directory to use instead of running pling from scratch'
-    )
 
-    db_group.add_argument(
-        '--skip_edit_dcj', '--skip-edit-dcj', '--no_edit_dcj', '--no-edit-dcj',
+    create_parser.add_argument(
+        '--recursive',
         action='store_true',
         default=False,
-        help='Skip running pling edit_dcj and use base typing directly (works on both new pling runs and with --pling_dir)'
+        help='Search input directories recursively for FASTA files'
     )
 
-    db_group.add_argument(
-        '--run_edit_dcj', '--run-edit-dcj',
-        action='store_true',
-        default=False,
-        help='Force running pling edit_dcj (fails if communities.pkl or distances missing)'
-    )
-
-    db_group.add_argument(
+    create_parser.add_argument(
         '--metadata',
         required=False,
         default=None,
         help='Optional CSV file with plasmid metadata'
     )
     
-    db_group.add_argument(
+    create_parser.add_argument(
         '--force',
         action='store_true',
         help='Overwrite existing database files'
     )
     
-    # Processing options
-    process_group = create_parser.add_argument_group('Processing Options')
+    # Pling & Community options
+    pling_group = create_parser.add_argument_group('Pling & Community Options')
     
-    process_group.add_argument(
+    pling_group.add_argument(
+        '--pling_dir', '--pling-dir',
+        required=False,
+        default=None,
+        help='Path to pre-made pling directory to use instead of running pling from scratch'
+    )
+
+    pling_group.add_argument(
+        '--containment_distance', '--containment-distance',
+        type=float,
+        default=0.3,
+        help='Pling containment distance threshold (default: 0.3)'
+    )
+
+    pling_group.add_argument(
+        '--skip_edit_dcj', '--skip-edit-dcj', '--no_edit_dcj', '--no-edit-dcj',
+        action='store_true',
+        default=False,
+        help='Skip running pling edit_dcj and use base typing directly (works on both new pling runs and with --pling_dir)'
+    )
+
+    pling_group.add_argument(
+        '--run_edit_dcj', '--run-edit-dcj',
+        action='store_true',
+        default=False,
+        help='Force running pling edit_dcj (fails if communities.pkl or distances missing)'
+    )
+
+    pling_group.add_argument(
+        '--update',
+        required=False,
+        default=None,
+        help='Path to previous accio db directory to update from'
+    )
+
+    # Quality control
+    qc_group = create_parser.add_argument_group('Quality Control Options')
+    
+    qc_group.add_argument(
+        '--check_circular', '--check-circular',
+        action='store_true',
+        default=False,
+        help='Check for circular sequences and mark accordingly (default: False)'
+    )
+
+    qc_group.add_argument(
+        '--no_plasmid_check', '--no-plasmid-check',
+        action='store_true',
+        default=False,
+        dest='no_plasmid_check',
+        help='Do not check for circularity/plasmid replicons'
+    )
+
+    qc_group.add_argument(
+        '--deduplicate',
+        action='store_true',
+        default=False,
+        help='Remove duplicate sequences based on 100%% identity'
+    )
+
+    qc_group.add_argument(
+        '--validate_sequences', '--validate-sequences',
+        action='store_true',
+        default=False,
+        help='Validate sequence quality (checks N-content and valid bases)'
+    )
+
+    # Clustering and length options
+    clustering_group = create_parser.add_argument_group('Clustering & Length Options')
+    
+    clustering_group.add_argument(
         '-t', '--threads',
         type=int,
         default=4,
         help='Number of threads for database building (default: 4)'
     )
     
-    process_group.add_argument(
-        '--min_length',
+    clustering_group.add_argument(
+        '--min_length', '--min-length',
         type=int,
         default=10000,
-        help='Minimum plasmid length to include (default: 1000 bp)'
+        help='Minimum plasmid length to include (default: 10000 bp)'
     )
     
-    process_group.add_argument(
-        '--max_length',
+    clustering_group.add_argument(
+        '--max_length', '--max-length',
         type=int,
         default=1000000,
         help='Maximum plasmid length to include (default: 1,000,000 bp)'
     )
     
-    process_group.add_argument(
-        '--cluster_threshold',
+    clustering_group.add_argument(
+        '--cluster_threshold', '--cluster-threshold',
         type=float,
         default=0.95,
         help='Similarity threshold for clustering (default: 0.95)'
     )
-    process_group.add_argument('--no-plasmid-check',
-                                action='store_true', default=False,
-                                help='Do not check for circularity/plasmid replicons')
-    process_group.add_argument('--no_clustering',
-                               action='store_true', default=False,
-                               help='Do not cluster plasmid sequences')
 
-    # Quality control
-    qc_group = create_parser.add_argument_group('Quality Control')
-    
-    qc_group.add_argument(
-        '--check_circular',
+    clustering_group.add_argument(
+        '--no_clustering', '--no-clustering',
         action='store_true',
-        help='Check for circular sequences and mark accordingly'
-    )
-    
-    qc_group.add_argument(
-        '--deduplicate',
-        action='store_true',
-        help='Remove duplicate sequences based on 100%% identity'
+        default=False,
+        dest='no_clustering',
+        help='Do not cluster plasmid sequences'
     )
     
 
@@ -431,7 +485,8 @@ def add_check_parser(subparsers) -> None:
     )
     
     check_parser.add_argument(
-        '--databases',
+        '-d', '--database', '--databases',
+        dest='databases',
         metavar='DIR',
         help='Check database files in specified directory'
     )
@@ -439,7 +494,7 @@ def add_check_parser(subparsers) -> None:
     check_parser.add_argument(
         '--all',
         action='store_true',
-        help='Check both tools and databases (requires --databases)'
+        help='Check both tools and databases (requires -d/--databases)'
     )
 
 def add_collate_parser(subparsers) -> None:
@@ -452,19 +507,21 @@ def add_collate_parser(subparsers) -> None:
 def add_query_parser(subparsers) -> None:
     """Add the 'query' subcommand parser"""
     query_parser = subparsers.add_parser('query', help='Get info about a database plasmid')
-    query_parser.add_argument('database', help='Path to the database directory')
-    query_parser.add_argument('--plasmid_id', help='ID of the plasmid to query')
-    query_parser.add_argument('--pling_type', help='Pling type to query')
+    query_parser.add_argument('database', nargs='?', default=None, help='Path to the database directory (positional)')
+    query_parser.add_argument('-d', '--database', dest='database_opt', help='Path to the database directory (flag)')
+    query_parser.add_argument('--plasmid_id', '--plasmid-id', dest='plasmid_id', help='ID of the plasmid to query')
+    query_parser.add_argument('--pling_type', '--pling-type', '--subcommunity', dest='pling_type', help='Pling type to query')
     query_parser.add_argument('--community', help='Plasmid community to query')
-    query_parser.add_argument('--replicon_type', help='Replicon type to query')
+    query_parser.add_argument('--replicon_type', '--replicon-type', '--rep_type', '--rep-type', '--replicon', dest='replicon_type', help='Replicon type to query')
+    query_parser.add_argument('-o', '--output', help='Optional CSV file to save query results')
 
 def add_multi_parser(subparsers) -> None:
     """Add the 'multi' subcommand parser"""
     multi_parser = subparsers.add_parser('multi', help='Find and assign plasmids in many genomes')
-    multi_parser.add_argument('--assemblies', nargs='+', required=True, help="Directory containing FASTA files.")
+    multi_parser.add_argument('-a', '--assemblies', nargs='+', required=True, help="Directory containing FASTA files or list of FASTA files.")
     multi_parser.add_argument('--reads_dir', help="Directory containing read files.")
     multi_parser.add_argument('-d', '--database', required=True, help="Path to the database directory.")
-    multi_parser.add_argument('-o', '--output_dir', required=True, help="Parent directory for all output.")
+    multi_parser.add_argument('-o', '--output_dir', '--output', required=True, dest='output_dir', help="Parent directory for all output.")
 
     add_find_analyses_parsers(multi_parser) 
 
@@ -696,11 +753,13 @@ def handle_create_command(args: argparse.Namespace) -> int:
             update_existing=args.update,
             pling_dir=getattr(args, 'pling_dir', None),
             run_edit_dcj=run_edit_dcj,
+            containment_distance=getattr(args, 'containment_distance', 0.3),
             min_size=args.min_length,
             max_size=args.max_length,
             check_circular=args.check_circular,
             no_cluster=args.no_clustering,
             deduplicate=args.deduplicate,
+            validate_sequences=getattr(args, 'validate_sequences', False),
             use_all=args.no_plasmid_check,
             cluster_threshold=args.cluster_threshold
         )
@@ -796,7 +855,81 @@ def handle_check_command(args: argparse.Namespace) -> int:
     return exit_code
 
 def handle_query_command(args: argparse.Namespace) -> int:
-    pass
+    """Handle the 'query' subcommand to retrieve plasmid information from a database."""
+    logger = logging.getLogger(__name__)
+    db_raw = args.database or getattr(args, 'database_opt', None)
+    if not db_raw:
+        logger.error("Database directory must be specified (e.g. `accio query <database_dir>` or `accio query -d <database_dir>`)")
+        return 1
+    db_path = Path(db_raw).resolve()
+    info_file = db_path / 'plasmidDB_info.csv'
+    
+    if not info_file.exists():
+        logger.error(f"Database info file not found: {info_file}")
+        return 1
+        
+    try:
+        df = pd.read_csv(info_file)
+    except Exception as e:
+        logger.error(f"Failed to read database info from {info_file}: {e}")
+        return 1
+
+    plasmid_id = getattr(args, 'plasmid_id', None)
+    pling_type = getattr(args, 'pling_type', None)
+    community = getattr(args, 'community', None)
+    replicon_type = getattr(args, 'replicon_type', None)
+
+    if not any([plasmid_id, pling_type, community, replicon_type]):
+        logger.info(f"Database contains {len(df)} total plasmids across {df['cluster_id'].nunique() if 'cluster_id' in df.columns else 'N/A'} clusters.")
+        cols_to_show = [c for c in ['plasmid_id', 'length', 'cluster_id', 'rep_types', 'rep_type', 'amr_genes', 'pling_type', 'community'] if c in df.columns]
+        if not cols_to_show:
+            cols_to_show = list(df.columns[:6])
+        print(df[cols_to_show].head(10).to_string(index=False))
+        print("\nTip: Specify --plasmid_id, --pling_type, --community, or --replicon_type to filter.")
+        return 0
+
+    results = df.copy()
+
+    if plasmid_id:
+        if 'plasmid_id' in results.columns:
+            results = results[results['plasmid_id'].astype(str).str.contains(str(plasmid_id), case=False, na=False)]
+        else:
+            logger.warning("'plasmid_id' column not found in database info.")
+
+    if pling_type:
+        if 'pling_type' in results.columns:
+            results = results[results['pling_type'].astype(str) == str(pling_type)]
+        else:
+            logger.warning("'pling_type' column not found in database info.")
+
+    if community:
+        if 'community' in results.columns:
+            results = results[results['community'].astype(str) == str(community)]
+        else:
+            logger.warning("'community' column not found in database info.")
+
+    if replicon_type:
+        rep_col = 'rep_types' if 'rep_types' in results.columns else ('rep_type' if 'rep_type' in results.columns else None)
+        if rep_col:
+            results = results[results[rep_col].astype(str).str.contains(str(replicon_type), case=False, na=False)]
+        else:
+            logger.warning("No replicon type column found in database info.")
+
+    if results.empty:
+        logger.info("No matching plasmids found.")
+    else:
+        logger.info(f"Found {len(results)} matching plasmid(s):")
+        cols_to_show = [c for c in ['plasmid_id', 'length', 'cluster_id', 'rep_types', 'rep_type', 'amr_genes', 'pling_type', 'community'] if c in results.columns]
+        if not cols_to_show:
+            cols_to_show = list(results.columns[:6])
+        print(results[cols_to_show].to_string(index=False))
+
+    output_path = getattr(args, 'output', None)
+    if output_path:
+        results.to_csv(output_path, index=False)
+        logger.info(f"Results saved to {output_path}")
+
+    return 0
 
 def handle_multi_command(args: argparse.Namespace) -> int:
     """Handle the 'multi' subcommand to run analysis on multiple samples."""

@@ -51,9 +51,10 @@ class DatabaseBuilder:
                       update_existing: Optional[str] = None,
                       pling_dir: Optional[str] = None,
                       run_edit_dcj: Optional[bool] = None,
+                      containment_distance: float = 0.3,
                       min_size: int = 10000,
                       max_size: int = 10000000,
-                      check_circular: bool = True,
+                      check_circular: bool = False,
                       no_cluster: bool=False,
                       deduplicate: bool = False,
                       validate_sequences: bool = False,
@@ -177,7 +178,8 @@ class DatabaseBuilder:
             output_dir,
             previous_pling_dir=previous_pling_dir,
             premade_pling_dir=pling_dir,
-            run_edit_dcj=run_edit_dcj
+            run_edit_dcj=run_edit_dcj,
+            containment_distance=containment_distance
         )
 
         metadata_df = self._run_mob_cluster(rep_plasmids, metadata_df, mob_typer_file, output_dir)
@@ -435,7 +437,7 @@ class DatabaseBuilder:
         
         # Check for excessive N's
         n_content = seq_str.count('N') / len(seq_str)
-        if n_content > 0.05:  # More than 5% N's
+        if n_content > 0.1:  # More than 10% N's
             return False
             
         # Check for valid nucleotides
@@ -1072,7 +1074,8 @@ class DatabaseBuilder:
                                     metadata_df: pd.DataFrame, output_dir: str,
                                     previous_pling_dir: Optional[str] = None,
                                     premade_pling_dir: Optional[str] = None,
-                                    run_edit_dcj: Optional[bool] = None) -> pd.DataFrame:
+                                    run_edit_dcj: Optional[bool] = None,
+                                    containment_distance: float = 0.3) -> pd.DataFrame:
         """Create plasmid communities using Pling or pre-computed Pling outputs."""
         pling_runner = PlingRunner()
         pling_dir = Path(output_dir) / 'pling'
@@ -1134,7 +1137,7 @@ class DatabaseBuilder:
             fasta_path_file = self._write_pling_fastas(sequences, output_dir)
             pling_runner.run_pling(
                 str(fasta_path_file), str(pling_dir),
-                pling_args='--containment_distance 0.3',
+                pling_args=f'--containment_distance {containment_distance}',
                 previous_pling_dir=previous_pling_dir
             )
             if run_edit_dcj is not False:
