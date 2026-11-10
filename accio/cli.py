@@ -235,6 +235,12 @@ def add_find_analyses_parsers(parser):
         action='store_true',
         help='Only consider circular contigs as plasmid candidates'
     )
+    analysis_group.add_argument(
+        '--skip_novel_plasmids', '--skip-novel-plasmids', '--skip_novel', '--skip-novel',
+        action='store_true',
+        default=False,
+        help='Skip finding and analyzing novel plasmid contigs (skips PLASMe/geNomad and MOB-recon)'
+    )
     analysis_group.add_argument('--use_pling_type_counts', action='store_true',
                                 help='Use counts of matching pling types to assign plasmids')
     # Read mapping options
@@ -320,6 +326,34 @@ Examples:
         required=False,
         default=None,
         help='Path to previous accio db directory to update from'
+    )
+    
+    db_group.add_argument(
+        '--pling_dir', '--pling-dir',
+        required=False,
+        default=None,
+        help='Path to pre-made pling directory to use instead of running pling from scratch'
+    )
+
+    db_group.add_argument(
+        '--skip_edit_dcj', '--skip-edit-dcj', '--no_edit_dcj', '--no-edit-dcj',
+        action='store_true',
+        default=False,
+        help='Skip running pling edit_dcj and use base typing directly (works on both new pling runs and with --pling_dir)'
+    )
+
+    db_group.add_argument(
+        '--run_edit_dcj', '--run-edit-dcj',
+        action='store_true',
+        default=False,
+        help='Force running pling edit_dcj (fails if communities.pkl or distances missing)'
+    )
+
+    db_group.add_argument(
+        '--metadata',
+        required=False,
+        default=None,
+        help='Optional CSV file with plasmid metadata'
     )
     
     db_group.add_argument(
@@ -522,6 +556,8 @@ def handle_find_command(args: argparse.Namespace) -> int:
         if args.circular_only:
             config.CIRCULAR_ONLY = True
             
+        config.FIND_NOVEL_PLASMIDS = not getattr(args, 'skip_novel_plasmids', False)
+
         validate_config(config)
         
         
@@ -647,11 +683,19 @@ def handle_create_command(args: argparse.Namespace) -> int:
             
         logger.info(f"📄 Found {len(input_files)} unique FASTA file(s) to process.")
         
+        # Determine edit_dcj execution policy
+        skip_edit_dcj = getattr(args, 'skip_edit_dcj', False)
+        run_edit_dcj_flag = getattr(args, 'run_edit_dcj', False)
+        run_edit_dcj = False if skip_edit_dcj else (True if run_edit_dcj_flag else None)
+
         # Build database
         results = builder.build_database(
             input_files=[str(p) for p in input_files],
             output_dir=args.output,
+            metadata_file=getattr(args, 'metadata', None),
             update_existing=args.update,
+            pling_dir=getattr(args, 'pling_dir', None),
+            run_edit_dcj=run_edit_dcj,
             min_size=args.min_length,
             max_size=args.max_length,
             check_circular=args.check_circular,

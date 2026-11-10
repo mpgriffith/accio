@@ -72,12 +72,16 @@ accio find <assembly.fasta> -d <database_dir> -o <output_dir> [options]
 - `--min_identity`: BLAST identity threshold (default: 75)
 - `--min_coverage`: BLAST coverage threshold (default: 75) 
 - `--min_score`: Minimum assignment score (default: 0.80)
+- `--skip_novel_plasmids`: Skip finding and analyzing novel plasmid contigs (skips PLASMe/geNomad and MOB-recon)
 - `-t, --threads`: Number of threads (default: 4)
 
 **Examples:**
 ```bash
 # High sensitivity analysis
 accio find assembly.fasta -d databases -o results --min_identity 70 --min_score 0.70
+
+# Skip novel plasmid detection
+accio find assembly.fasta -d databases -o results --skip_novel_plasmids
 
 # Paired-end reads with custom thresholds
 accio find assembly.fasta -r R1.fastq R2.fastq -d databases -o results -t 8
@@ -97,6 +101,9 @@ accio create <input> -o <database_dir> [options]
 
 **Key Options:**
 - `--metadata`: CSV file with plasmid metadata
+- `--pling_dir`: Path to pre-made pling directory to reuse instead of running pling
+- `--skip_edit_dcj`: Skip pling `edit_dcj` step and use base typing directly (works on both new pling runs and with `--pling_dir`)
+- `--run_edit_dcj`: Force running pling `edit_dcj` (requires `communities.pkl` and distance files)
 - `--recursive`: Search directories recursively for FASTA files
 - `--min_length`: Minimum sequence length (default: 1000)
 - `--check_circular`: Detect circular sequences
@@ -109,6 +116,15 @@ accio create my_plasmids.fasta -o database
 
 # With quality control and metadata
 accio create plasmids/ -o database --recursive --deduplicate --validate_sequences --metadata info.csv
+
+# With a pre-made pling directory (runs edit_dcj by default if communities.pkl is present, or falls back to pre-existing typing)
+accio create plasmids.fasta -o database --pling_dir /path/to/premade_pling
+
+# With a pre-made pling directory and explicitly skip running edit_dcj
+accio create plasmids.fasta -o database --pling_dir /path/to/premade_pling --skip_edit_dcj
+
+# New pling run from scratch, but skipping edit_dcj
+accio create plasmids.fasta -o database --skip_edit_dcj
 
 # Update existing database
 accio create new_plasmids.fasta -o updated_database --update previous_database
@@ -251,8 +267,20 @@ config.MIN_PLASMID_SCORE = 0.80 # Assignment score threshold
 config.MIN_MASH_SCORE = 0.90    # Mash similarity threshold
 ```
 
+## Running Tests
+
+Run the test suite using `pytest`:
+
+```bash
+# Install test dependencies
+pip install -e .[test]
+
+# Run all tests
+pytest
+```
+
 ## Citation
-ACCIO is currently available as a preprint, please cite: [Nathan J. Raabe, Marissa P. Griffith, Vatsala Rangachar Srinivasa, Kady D. Waggle, Alexander J. Sundermann, Lora Lee Pless, Graham M. Snyder, Maria M. Brooks, Daria Van Tyne, Lee H. Harrison. 2025. ACCIO: An Assembly-Based Tool Enabling Plasmid Detection. medRxiv doi: https://doi.org/10.1101/2025.10.30.25338662](https://www.medrxiv.org/content/10.1101/2025.10.30.25338662).
+ACCIO is currently available as a preprint, please cite: [Raabe NJ, Griffith MP, Rangachar Srinivasa V, Waggle KD, Sundermann AJ, Pless LL, Snyder GM, Brooks MM, Van Tyne D, Harrison LH. ACCIO: an assembly-based tool enabling plasmid detection. Microb Genom. 2026 Oct;12(10). doi: 10.1099/mgen.0.001843. PMID: 42932221: https://doi.org/10.1101/2025.10.30.25338662](https://www.medrxiv.org/content/10.1101/2025.10.30.25338662).
 
 ##  License
 

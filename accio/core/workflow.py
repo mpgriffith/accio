@@ -110,10 +110,14 @@ class PlasmidAnalysisWorkflow:
         assignment_results = self._assign_plasmids(contigs, plasmids, output_dir, sample_name)
         
         # Handle novel plasmid contigs
-        self.logger.info("Processing novel plasmid contigs")
-        novel_results = self._process_novel_plasmids(
-            contigs, output_dir, sample_name
-        )
+        if getattr(self.config, 'FIND_NOVEL_PLASMIDS', True):
+            self.logger.info("Processing novel plasmid contigs")
+            novel_results = self._process_novel_plasmids(
+                contigs, output_dir, sample_name
+            )
+        else:
+            self.logger.info("Skipping novel plasmid processing")
+            novel_results = {'contigs': [], 'mob_results': pd.DataFrame(), 'contig_results': pd.DataFrame()}
         
         # Generate output files
         self.logger.info("Generating output files")
@@ -266,27 +270,30 @@ class PlasmidAnalysisWorkflow:
             results['plasme'] = pd.DataFrame()
             results['genomad'] = pd.DataFrame()
 
-            if self.config.CLASSIFIER in ['plasme', 'both']:
-                self.logger.info("Running PLASMe analysis")
-                try:
-                    plasme_results, plasme_files = self.plasme_runner.run_plasme(fasta_file, str(output_dir_path / 'plasme'))
-                    results['plasme'] = plasme_results
-                    if keep_intermediate:
-                        self.intermediate_files.extend(plasme_files.values())
-                except ExternalToolError as e:
-                    self.logger.warning(f"PLASMe analysis failed: {e}")
-            
-            if self.config.CLASSIFIER in ['genomad', 'both']:
-                self.logger.info("Running geNomad analysis")
-                try:
-                    genomad_dir = output_dir_path / 'genomad'
-                    self.genomad_runner.run_genomad(fasta_file, str(genomad_dir))
-                    stem = Path(fasta_file).stem
-                    summary_file = genomad_dir / f"{stem}_summary" / f"{stem}_plasmid_summary.tsv"
-                    if summary_file.exists():
-                        results['genomad'] = self.genomad_runner.read_genomad_results(str(summary_file))
-                except ExternalToolError as e:
-                    self.logger.warning(f"geNomad analysis failed: {e}")
+            if getattr(self.config, 'FIND_NOVEL_PLASMIDS', True):
+                if self.config.CLASSIFIER in ['plasme', 'both']:
+                    self.logger.info("Running PLASMe analysis")
+                    try:
+                        plasme_results, plasme_files = self.plasme_runner.run_plasme(fasta_file, str(output_dir_path / 'plasme'))
+                        results['plasme'] = plasme_results
+                        if keep_intermediate:
+                            self.intermediate_files.extend(plasme_files.values())
+                    except ExternalToolError as e:
+                        self.logger.warning(f"PLASMe analysis failed: {e}")
+                
+                if self.config.CLASSIFIER in ['genomad', 'both']:
+                    self.logger.info("Running geNomad analysis")
+                    try:
+                        genomad_dir = output_dir_path / 'genomad'
+                        self.genomad_runner.run_genomad(fasta_file, str(genomad_dir))
+                        stem = Path(fasta_file).stem
+                        summary_file = genomad_dir / f"{stem}_summary" / f"{stem}_plasmid_summary.tsv"
+                        if summary_file.exists():
+                            results['genomad'] = self.genomad_runner.read_genomad_results(str(summary_file))
+                    except ExternalToolError as e:
+                        self.logger.warning(f"geNomad analysis failed: {e}")
+            else:
+                self.logger.info("Skipping plasmid classifier analysis (novel plasmid search disabled)")
                 
         except ExternalToolError as e:
             self.logger.error(f"Sequence analysis failed: {e}")
@@ -430,10 +437,11 @@ class PlasmidAnalysisWorkflow:
             
             # Add AMR gene data
             if not blast_results['amr_genes'].empty:
-                amr_data = blast_results['amr_genes'][blast_results['amr_genes']['Contig id'] == contig_id]
-                amr_data['sim_score]'] = amr_data['% Identity to reference'] * amr_data['% Coverage of reference'] / 100
-                amr_data = amr_data[amr_data['sim_score]'] > 80]
-                contig.add_amr_genes(amr_data['Element symbol'].tolist())
+                amr_data = blast_results['amr_genes'][blast_results['amr_genes']['Contig id'] == contig_id].copy()
+                if not amr_data.empty:
+                    amr_data['sim_score'] = amr_data['% Identity to reference'] * amr_data['% Coverage of reference'] / 100
+                    amr_data = amr_data[amr_data['sim_score'] > 80]
+                    contig.add_amr_genes(amr_data['Element symbol'].tolist())
             # Add Nucmer data
             coords_data = blast_results['nucmer_coords'][blast_results['nucmer_coords']['qseqid'] == contig_id]
             snps_data = blast_results['nucmer_snps'][blast_results['nucmer_snps']['query'] == contig_id]
@@ -682,6 +690,9 @@ class PlasmidAnalysisWorkflow:
     def _process_novel_plasmids(self, contigs: Dict[str, Contig],
                                output_dir: str, sample_name: str) -> Dict[str, Any]:
         """Process contigs that appear to be novel plasmids."""
+        if not getattr(self.config, 'FIND_NOVEL_PLASMIDS', True):
+            return {'contigs': [], 'mob_results': pd.DataFrame(), 'contig_results': pd.DataFrame()}
+
         novel_contigs = [c for c in contigs.values() if c.type == 'plasmid' and not c.assigned]
 
         if novel_contigs:
@@ -731,74 +742,75 @@ class PlasmidAnalysisWorkflow:
         mob_results = novel_results.get('mob_results', pd.DataFrame())
         mob_contigs = novel_results.get('contig_results', pd.DataFrame())
 
-        if not mob_results.empty:
-            # Group by plasmid ID from MOB-recon
-            mob_plasmid_contigs = mob_contigs[mob_contigs['molecule_type'] == 'plasmid']
-            for plasmid_id, group in mob_plasmid_contigs.groupby('primary_cluster_id'):
-                contig_ids = group['contig_id'].tolist()
-                rep_row = mob_results[mob_results['primary_cluster_id'] == plasmid_id].iloc[0]
-                # Find corresponding contig objects
-                plasmid_contigs = [c for c in novel_contigs if c.id in contig_ids]
+        if getattr(self.config, 'FIND_NOVEL_PLASMIDS', True):
+            if not mob_results.empty:
+                # Group by plasmid ID from MOB-recon
+                mob_plasmid_contigs = mob_contigs[mob_contigs['molecule_type'] == 'plasmid']
+                for plasmid_id, group in mob_plasmid_contigs.groupby('primary_cluster_id'):
+                    contig_ids = group['contig_id'].tolist()
+                    rep_row = mob_results[mob_results['primary_cluster_id'] == plasmid_id].iloc[0]
+                    # Find corresponding contig objects
+                    plasmid_contigs = [c for c in novel_contigs if c.id in contig_ids]
 
-                if not plasmid_contigs:
-                    continue
+                    if not plasmid_contigs:
+                        continue
 
-                rep_types = set()
-                for contig in plasmid_contigs:
-                    if contig.rep_types:
+                    rep_types = set()
+                    for contig in plasmid_contigs:
+                        if contig.rep_types:
 
-                        rep_types.update(set(r.split('_')[0].split('(')[0].split('-')[0] for r in contig.rep_types))
+                            rep_types.update(set(r.split('_')[0].split('(')[0].split('-')[0] for r in contig.rep_types))
 
-                # Get data from the first row of the group, assuming it's representative
-                #rep_row = group.iloc[0]
+                    # Get data from the first row of the group, assuming it's representative
+                    #rep_row = group.iloc[0]
 
+                    novel_entry = {
+                        'ACCIO_Plasmids': 'novel_plasmid',
+                        'plasmid_id': plasmid_id,
+                        'cluster_id': 'novel',
+                        'pling_type': 'novel',
+                        'size': rep_row.get('size', sum(c.length for c in plasmid_contigs)),
+                        'length': sum(c.length for c in plasmid_contigs),
+                        'num_contigs': len(plasmid_contigs),
+                        'contig_ids': [c.id for c in plasmid_contigs],
+                        'rep_type': ','.join(sorted(list(rep_types))),
+                        'contig_amr_genes': ','.join(set(
+                            gene for c in plasmid_contigs if c.amr_genes
+                            for gene in c.amr_genes
+                        )),
+                        'mob_plasmid_id': rep_row.get('plasmid_id'),
+                        'mob_cluster_id': rep_row.get('primary_cluster_id'),
+                        'mob_rep_types': rep_row.get('rep_type(s)'),
+                        'mob_mash_nearest_neighbor': rep_row.get('mash_nearest_neighbor'),
+                        'mob_mash_dist': rep_row.get('mash_dist'),
+                    }
+                    plasmid_data.append(novel_entry)
+            if mob_results.empty:
+                none_novel = {'ACCIO_Plasmids': 'novel_plasmids_found', 'plasmid_id': None, 'cluster_id': None, 'pling_type': None, 'contig_ids': []}
+                plasmid_data.append(none_novel)
+            novel_unclass_contigs = list(set([c.id for c in novel_contigs]) - set(mob_plasmid_contigs.contig_id.tolist())) if not mob_contigs.empty else set([c.id for c in novel_contigs])
+            if novel_unclass_contigs and len(novel_unclass_contigs) > 0:
+                # Fallback if MOB-recon fails but novel contigs are found
+                
+                novel_unclass_contigs = [c for c in novel_contigs if c.id in novel_unclass_contigs]
                 novel_entry = {
-                    'ACCIO_Plasmids': 'novel_plasmid',
-                    'plasmid_id': plasmid_id,
+                    'ACCIO_Plasmids': 'unmatched_novel_plasmid',
+                    'plasmid_id': 'unmatched_plasmid_contigs',
                     'cluster_id': 'novel',
                     'pling_type': 'novel',
-                    'size': rep_row.get('size', sum(c.length for c in plasmid_contigs)),
-                    'length': sum(c.length for c in plasmid_contigs),
-                    'num_contigs': len(plasmid_contigs),
-                    'contig_ids': [c.id for c in plasmid_contigs],
-                    'rep_type': ','.join(sorted(list(rep_types))),
-                    'contig_amr_genes': ','.join(set(
-                        gene for c in plasmid_contigs if c.amr_genes
-                        for gene in c.amr_genes
+                    'length': sum(c.length for c in novel_unclass_contigs),
+                    'num_contigs': len(novel_unclass_contigs),
+                    'contig_ids': [c.id for c in novel_unclass_contigs],
+                    'rep_type': ','.join(set(
+                        rep for c in novel_unclass_contigs if c.rep_types
+                        for rep in c.rep_types
                     )),
-                    'mob_plasmid_id': rep_row.get('plasmid_id'),
-                    'mob_cluster_id': rep_row.get('primary_cluster_id'),
-                    'mob_rep_types': rep_row.get('rep_type(s)'),
-                    'mob_mash_nearest_neighbor': rep_row.get('mash_nearest_neighbor'),
-                    'mob_mash_dist': rep_row.get('mash_dist'),
+                    'contig_amr_genes': ','.join(set(
+                        gene for c in novel_unclass_contigs if c.amr_genes
+                        for gene in c.amr_genes
+                    ))
                 }
                 plasmid_data.append(novel_entry)
-        if mob_results.empty:
-            none_novel = {'ACCIO_Plasmids': 'novel_plasmids_found', 'plasmid_id': None, 'cluster_id': None, 'pling_type': None, 'contig_ids': []}
-            plasmid_data.append(none_novel)
-        novel_unclass_contigs = list(set([c.id for c in novel_contigs]) - set(mob_plasmid_contigs.contig_id.tolist())) if not mob_contigs.empty else set([c.id for c in novel_contigs])
-        if novel_unclass_contigs and len(novel_unclass_contigs) > 0:
-            # Fallback if MOB-recon fails but novel contigs are found
-            
-            novel_unclass_contigs = [c for c in novel_contigs if c.id in novel_unclass_contigs]
-            novel_entry = {
-                'ACCIO_Plasmids': 'unmatched_novel_plasmid',
-                'plasmid_id': 'unmatched_plasmid_contigs',
-                'cluster_id': 'novel',
-                'pling_type': 'novel',
-                'length': sum(c.length for c in novel_unclass_contigs),
-                'num_contigs': len(novel_unclass_contigs),
-                'contig_ids': [c.id for c in novel_unclass_contigs],
-                'rep_type': ','.join(set(
-                    rep for c in novel_unclass_contigs if c.rep_types
-                    for rep in c.rep_types
-                )),
-                'contig_amr_genes': ','.join(set(
-                    gene for c in novel_unclass_contigs if c.amr_genes
-                    for gene in c.amr_genes
-                ))
-            }
-            plasmid_data.append(novel_entry)
             
 
         # Write plasmid summary
@@ -821,6 +833,7 @@ class PlasmidAnalysisWorkflow:
         for contig in contigs.values():
             summary = contig.get_summary()
             summary['novel_plasmid_contig'] = (
+                getattr(self.config, 'FIND_NOVEL_PLASMIDS', True) and
                 contig.type == 'plasmid' and not contig.assigned
             )
             contig_data.append(summary)
@@ -831,10 +844,17 @@ class PlasmidAnalysisWorkflow:
         output_files['log'] =  str(output_dir_path / f'{sample_name}_accio.log')
         if len(plasmid_data) > 0 and not plasmid_data.empty:
             for idx, row in plasmid_data.iterrows():
+                if not row.get('contig_ids'):
+                    continue
                 seqs = []
                 for contig_id in row['contig_ids']:
-                    seqs.append(contigs[contig_id].seq)
+                    if contig_id in contigs:
+                        seqs.append(contigs[contig_id].seq)
+                if not seqs:
+                    continue
                 output_plasmid_name = row['pling_type'] if row['pling_type'] != 'novel' else row['plasmid_id']
+                if not output_plasmid_name or pd.isna(output_plasmid_name):
+                    continue
                 fasta_output = output_dir_path / f"{sample_name}_plasmid_{output_plasmid_name}_contigs.fasta"
                 SeqIO.write(seqs, str(fasta_output), 'fasta')
                 output_files[f"plasmid_{output_plasmid_name}_seq"] = str(fasta_output)

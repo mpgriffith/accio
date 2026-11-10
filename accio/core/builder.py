@@ -49,6 +49,8 @@ class DatabaseBuilder:
                       output_dir: str,
                       metadata_file: Optional[str] = None,
                       update_existing: Optional[str] = None,
+                      pling_dir: Optional[str] = None,
+                      run_edit_dcj: Optional[bool] = None,
                       min_size: int = 10000,
                       max_size: int = 10000000,
                       check_circular: bool = True,
@@ -65,6 +67,8 @@ class DatabaseBuilder:
             output_dir: Output directory for database files
             metadata_file: Optional CSV file with plasmid metadata
             update_existing: Whether to update existing database
+            pling_dir: Optional path to pre-made pling directory
+            run_edit_dcj: Whether to run edit_dcj (True=force, False=skip, None=run if communities.pkl exists)
             min_size: Minimum sequence length to include
             max_size: Maximum sequence length to include
             check_circular: Check for circular sequences
@@ -167,7 +171,14 @@ class DatabaseBuilder:
             else:
                 self.logger.warning(f"Previous Pling directory or typing.tsv not found in {potential_pling_dir}. Running Pling from scratch.")
 
-        metadata_df = self._create_plasmid_communities(rep_plasmids, metadata_df, output_dir, previous_pling_dir=previous_pling_dir)
+        metadata_df = self._create_plasmid_communities(
+            rep_plasmids,
+            metadata_df,
+            output_dir,
+            previous_pling_dir=previous_pling_dir,
+            premade_pling_dir=pling_dir,
+            run_edit_dcj=run_edit_dcj
+        )
 
         metadata_df = self._run_mob_cluster(rep_plasmids, metadata_df, mob_typer_file, output_dir)
         
@@ -861,11 +872,81 @@ class DatabaseBuilder:
     
     
 
-    def _create_plasmid_communities(self, sequences: Dict[str, SeqRecord], 
-                                    metadata_df: pd.DataFrame, output_dir: str,
-                                    previous_pling_dir: Optional[str] = None) -> pd.DataFrame:
-        pling_runner = PlingRunner()
-        pling_dir = str(Path(output_dir) / 'pling')
+    @staticmethod
+    def _read_delimited_table(filepath: Optional[Path]) -> pd.DataFrame:
+        """Read a CSV or TSV file into a DataFrame with auto-delimiter fallback."""
+        if not filepath or not filepath.exists():
+            return pd.DataFrame()
+        sep = ',' if filepath.suffix.lower() == '.csv' else '\t'
+        try:
+            return pd.read_csv(filepath, sep=sep, index_col=0)
+        except Exception:
+            try:
+                return pd.read_csv(filepath, sep=None, engine='python', index_col=0)
+            except Exception:
+                return pd.DataFrame()
+
+    @staticmethod
+    def _find_first_existing_file(candidates: List[Path]) -> Optional[Path]:
+        """Return the first candidate path that exists, or None."""
+        for path in candidates:
+            if path and path.exists():
+                return path
+        return None
+
+    def _setup_premade_pling_dir(self, premade_pling_dir: str, target_pling_path: Path) -> Path:
+        """Validate and copy a pre-made pling directory, normalizing distance files."""
+        premade_path = Path(premade_pling_dir).resolve()
+        if not premade_path.exists():
+            self.logger.error(f"Provided pling directory does not exist: {premade_pling_dir}")
+            raise FileNotFoundError(f"Provided pling directory does not exist: {premade_pling_dir}")
+
+        target_path = target_pling_path.resolve()
+        if premade_path != target_path:
+            self.logger.info(f"Using pre-made pling directory from {premade_path} -> {target_path}")
+            if target_path.exists():
+                shutil.rmtree(target_path)
+            shutil.copytree(str(premade_path), str(target_path))
+        else:
+            self.logger.info(f"Using pre-made pling directory at {target_path}")
+
+        # Normalize distance file name if user provided all_plasmid_distances.csv/tsv
+        target_dist_tsv = target_path / 'all_plasmids_distances.tsv'
+        if not target_dist_tsv.exists():
+            for alt_name in [
+                'all_plasmid_distances.csv',
+                'all_plasmids_distances.csv',
+                'all_plasmid_distances.tsv',
+                'distances.tsv',
+                'distances.csv',
+                'plasmid_distances.csv',
+                'plasmid_distances.tsv',
+            ]:
+                alt_file = target_path / alt_name
+                if alt_file.exists():
+                    try:
+                        dist_df = pd.read_csv(alt_file, sep=',' if alt_file.suffix.lower() == '.csv' else '\t')
+                        dist_df.to_csv(target_dist_tsv, sep='\t', index=False)
+                        self.logger.info(f"Normalized distance file {alt_file.name} -> all_plasmids_distances.tsv")
+                        break
+                    except Exception as e:
+                        self.logger.warning(f"Could not convert distance file {alt_file}: {e}")
+
+        if not target_dist_tsv.exists():
+            for alt_file in target_path.rglob('*distance*'):
+                if alt_file.is_file() and alt_file.suffix.lower() in ['.csv', '.tsv'] and alt_file.resolve() != target_dist_tsv.resolve():
+                    try:
+                        dist_df = pd.read_csv(alt_file, sep=',' if alt_file.suffix.lower() == '.csv' else '\t')
+                        dist_df.to_csv(target_dist_tsv, sep='\t', index=False)
+                        self.logger.info(f"Normalized distance file from subfolder {alt_file} -> all_plasmids_distances.tsv")
+                        break
+                    except Exception as e:
+                        self.logger.warning(f"Could not convert distance file {alt_file}: {e}")
+
+        return target_path
+
+    def _write_pling_fastas(self, sequences: Dict[str, SeqRecord], output_dir: str) -> Path:
+        """Write individual FASTA files and manifest path list for Pling."""
         fasta_dir = Path(output_dir) / 'fastas'
         fasta_dir.mkdir(exist_ok=True)
         for seq in sequences:
@@ -873,31 +954,212 @@ class DatabaseBuilder:
         fasta_path_file = Path(output_dir) / 'pling_fasta_paths.txt'
         with open(fasta_path_file, 'w') as f:
             f.write('\n'.join([str(fasta_dir / f'{seq.id}.fasta') for seq in sequences]))
-        pling_runner.run_pling(str(fasta_path_file), pling_dir, pling_args='--containment_distance 0.3', previous_pling_dir=previous_pling_dir)
-        new_dcj_types_dir = pling_runner.edit_dcj(metadata_df, previous_pling_dir=previous_pling_dir)
-        
-        # Assuming edit_dcj returns the path to the new typing results directory
-        typing_file = Path(new_dcj_types_dir) / 'objects' / 'typing.tsv'
-        if typing_file.exists():
-            pling_types = pd.read_csv(typing_file, sep='\t', index_col=0, header=0, names=['pling_type'])
-            hub_plasmids = pd.read_csv(str(Path(pling_dir) / 'dcj_thresh_4_graph' /'objects'/ 'hub_plasmids.csv'), index_col=0)
-            communities = pd.read_csv(str(Path(pling_dir) / 'containment' /'containment_communities' /'objects'/ 'communities.tsv'), sep='\t', index_col=0, header=0, names=['community'])
+        return fasta_path_file
 
-            metadata_df = metadata_df.join(pling_types, how='left', lsuffix='_orig')
+    def _load_previous_pling_data(self, pling_dir: Path, 
+                                 typing_dir: Optional[Path] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        Load typing, hub plasmid, and community tables from a pling directory.
+
+        Args:
+            pling_dir: Base directory containing pling outputs.
+            typing_dir: Directory where edit_dcj/typing results are located.
+
+        Returns:
+            Tuple of (typing_df, hub_plasmids_df, communities_df)
+        """
+        typing_candidates = []
+        if typing_dir:
+            typing_candidates.extend([
+                typing_dir / 'objects' / 'typing.tsv',
+                typing_dir / 'objects' / 'typing.csv',
+                typing_dir / 'typing.tsv',
+                typing_dir / 'typing.csv',
+            ])
+        typing_candidates.extend([
+            pling_dir / 'pling_dcj_length_subcommunities' / 'objects' / 'typing.tsv',
+            pling_dir / 'pling_dcj_length_subcommunities' / 'objects' / 'typing.csv',
+            pling_dir / 'dcj_thresh_4_graph' / 'objects' / 'typing.tsv',
+            pling_dir / 'dcj_thresh_4_graph' / 'objects' / 'typing.csv',
+            pling_dir / 'objects' / 'typing.tsv',
+            pling_dir / 'objects' / 'typing.csv',
+            pling_dir / 'typing.tsv',
+            pling_dir / 'typing.csv',
+        ])
+        typing_file = self._find_first_existing_file(typing_candidates)
+
+        hub_candidates = [
+            pling_dir / 'dcj_thresh_4_graph' / 'objects' / 'hub_plasmids.csv',
+            pling_dir / 'dcj_thresh_4_graph' / 'objects' / 'hub_plasmids.tsv',
+            pling_dir / 'objects' / 'hub_plasmids.csv',
+            pling_dir / 'objects' / 'hub_plasmids.tsv',
+            pling_dir / 'hub_plasmids.csv',
+            pling_dir / 'hub_plasmids.tsv',
+            pling_dir / 'hub_plasmids',
+        ]
+        hub_file = self._find_first_existing_file(hub_candidates)
+
+        comm_candidates = [
+            pling_dir / 'containment' / 'containment_communities' / 'objects' / 'communities.tsv',
+            pling_dir / 'containment' / 'containment_communities' / 'objects' / 'communities.csv',
+            pling_dir / 'objects' / 'communities.tsv',
+            pling_dir / 'objects' / 'communities.csv',
+            pling_dir / 'communities.tsv',
+            pling_dir / 'communities.csv',
+        ]
+        comm_file = self._find_first_existing_file(comm_candidates)
+
+        # Parse typing
+        raw_typing = self._read_delimited_table(typing_file)
+        if 'pling_type' in raw_typing.columns:
+            pling_types = raw_typing[['pling_type']]
+        elif 'typing' in raw_typing.columns:
+            pling_types = raw_typing[['typing']].rename(columns={'typing': 'pling_type'})
+        elif raw_typing.shape[1] >= 1:
+            col = raw_typing.columns[0]
+            pling_types = raw_typing[[col]].rename(columns={col: 'pling_type'})
+        else:
+            pling_types = pd.DataFrame(columns=['pling_type'])
+
+        # Parse hub plasmids and communities
+        hub_plasmids = self._read_delimited_table(hub_file)
+        communities = self._read_delimited_table(comm_file)
+        if not communities.empty and 'community' not in communities.columns and communities.shape[1] >= 1:
+            communities = communities.rename(columns={communities.columns[0]: 'community'})
+
+        return pling_types, hub_plasmids, communities
+
+    def _annotate_metadata_with_pling(self, metadata_df: pd.DataFrame,
+                                     pling_types: pd.DataFrame,
+                                     hub_plasmids: pd.DataFrame,
+                                     communities: pd.DataFrame) -> pd.DataFrame:
+        """Annotate plasmid metadata with pling typing, community, and hub designations."""
+        metadata_df = metadata_df.join(pling_types, how='left', lsuffix='_orig')
+        if not communities.empty:
             metadata_df = metadata_df.join(communities, how='left', lsuffix='_orig')
-            cols_to_drop = [col for col in metadata_df.columns if col.endswith('_orig')]
-            metadata_df = metadata_df.drop(columns=cols_to_drop)
+
+        cols_to_drop = [col for col in metadata_df.columns if col.endswith('_orig')]
+        metadata_df = metadata_df.drop(columns=cols_to_drop)
+
+        # Annotate hub plasmids
+        if not hub_plasmids.empty:
             for i, h in enumerate(hub_plasmids.index):
-                metadata_df.loc[h, 'pling_type'] = communities.loc[h, 'community'] + f"_hub{i}"
-            def get_amr_genes_by_subcommunity(subcommunity):
-                if pd.isna(subcommunity):
-                    return None
-                sub_df = metadata_df[metadata_df['pling_type'] == subcommunity]
-                amr_genes = set()
+                if h in metadata_df.index:
+                    if not communities.empty and h in communities.index:
+                        metadata_df.loc[h, 'pling_type'] = f"{communities.loc[h, 'community']}_hub{i}"
+                    elif 'pling_type' in metadata_df.columns and pd.notna(metadata_df.loc[h, 'pling_type']):
+                        metadata_df.loc[h, 'pling_type'] = f"{metadata_df.loc[h, 'pling_type']}_hub{i}"
+                    else:
+                        metadata_df.loc[h, 'pling_type'] = f"hub{i}"
+
+        # Map AMR genes by subcommunity
+        def get_amr_genes_by_subcommunity(subcommunity):
+            if pd.isna(subcommunity):
+                return None
+            sub_df = metadata_df[metadata_df['pling_type'] == subcommunity]
+            amr_genes = set()
+            if 'amr_genes' in sub_df.columns:
                 for genes in sub_df['amr_genes'].dropna():
                     amr_genes.update(genes.split(','))
-                return ','.join(sorted(set(amr_genes)))
+            return ','.join(sorted(set(amr_genes)))
+
+        if 'pling_type' in metadata_df.columns:
             metadata_df['subcommunity_amr_genes'] = metadata_df['pling_type'].map(get_amr_genes_by_subcommunity)
+
+        return metadata_df
+
+    def _create_plasmid_communities(self, sequences: Dict[str, SeqRecord], 
+                                    metadata_df: pd.DataFrame, output_dir: str,
+                                    previous_pling_dir: Optional[str] = None,
+                                    premade_pling_dir: Optional[str] = None,
+                                    run_edit_dcj: Optional[bool] = None) -> pd.DataFrame:
+        """Create plasmid communities using Pling or pre-computed Pling outputs."""
+        pling_runner = PlingRunner()
+        pling_dir = Path(output_dir) / 'pling'
+        new_dcj_types_dir = None
+
+        if premade_pling_dir:
+            self._setup_premade_pling_dir(premade_pling_dir, pling_dir)
+            pling_runner.output_dir = str(pling_dir)
+
+            comm_pkl = pling_dir / 'containment' / 'containment_communities' / 'objects' / 'communities.pkl'
+            if not comm_pkl.exists():
+                for alt_pkl in [pling_dir / 'communities.pkl', pling_dir / 'objects' / 'communities.pkl']:
+                    if alt_pkl.exists():
+                        comm_pkl.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(alt_pkl, comm_pkl)
+                        self.logger.info(f"Copied {alt_pkl.name} to {comm_pkl}")
+                        break
+                if not comm_pkl.exists():
+                    for match_pkl in pling_dir.rglob('communities.pkl'):
+                        if match_pkl.is_file() and match_pkl.resolve() != comm_pkl.resolve():
+                            comm_pkl.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy(match_pkl, comm_pkl)
+                            self.logger.info(f"Found and copied {match_pkl} to {comm_pkl}")
+                            break
+
+            has_distances = (pling_dir / 'all_plasmids_distances.tsv').exists()
+            has_comm_pkl = comm_pkl.exists()
+
+            should_run_edit_dcj = False
+            if run_edit_dcj is True:
+                if not (has_comm_pkl and has_distances):
+                    missing = []
+                    if not has_distances:
+                        missing.append("all_plasmids_distances.tsv")
+                    if not has_comm_pkl:
+                        missing.append("communities.pkl (required by plasnet type)")
+                    self.logger.error(f"Cannot run edit_dcj: missing {', '.join(missing)}")
+                    raise FileNotFoundError(f"Cannot run edit_dcj: missing {', '.join(missing)}")
+                should_run_edit_dcj = True
+            elif run_edit_dcj is False:
+                self.logger.info("edit_dcj skipped by configuration; using pre-existing typing file.")
+                should_run_edit_dcj = False
+            else:
+                # Default behavior: run edit_dcj if communities.pkl and distances exist; otherwise use pre-existing typing
+                if has_comm_pkl and has_distances:
+                    self.logger.info("Found communities.pkl and distance matrix; running edit_dcj by default...")
+                    should_run_edit_dcj = True
+                else:
+                    self.logger.info("communities.pkl or distance matrix not found; using pre-existing typing results directly.")
+                    should_run_edit_dcj = False
+
+            if should_run_edit_dcj:
+                try:
+                    new_dcj_types_dir = pling_runner.edit_dcj(metadata_df, previous_pling_dir=previous_pling_dir)
+                except Exception as e:
+                    self.logger.warning(f"edit_dcj failed: {e}. Falling back to pre-existing typing results.")
+                    new_dcj_types_dir = None
+        else:
+            fasta_path_file = self._write_pling_fastas(sequences, output_dir)
+            pling_runner.run_pling(
+                str(fasta_path_file), str(pling_dir),
+                pling_args='--containment_distance 0.3',
+                previous_pling_dir=previous_pling_dir
+            )
+            if run_edit_dcj is not False:
+                try:
+                    new_dcj_types_dir = pling_runner.edit_dcj(metadata_df, previous_pling_dir=previous_pling_dir)
+                except Exception as e:
+                    self.logger.warning(f"edit_dcj failed: {e}. Falling back to default pling typing results.")
+                    new_dcj_types_dir = None
+            else:
+                self.logger.info("edit_dcj skipped by configuration on new pling run; using default pling typing.")
+                new_dcj_types_dir = None
+
+        # Load pling data and annotate metadata
+        pling_types, hub_plasmids, communities = self._load_previous_pling_data(
+            pling_dir=pling_dir,
+            typing_dir=Path(new_dcj_types_dir) if new_dcj_types_dir else None
+        )
+
+        if not pling_types.empty:
+            metadata_df = self._annotate_metadata_with_pling(
+                metadata_df, pling_types, hub_plasmids, communities
+            )
+        else:
+            self.logger.warning(f"Typing results not found in {pling_dir}. Pling types could not be assigned.")
+
         return metadata_df
 
     def _build_blast_database(self, output_dir: str) -> None:

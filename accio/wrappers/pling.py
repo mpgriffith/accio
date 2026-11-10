@@ -70,9 +70,41 @@ class PlingRunner:
         new_dcj_dists = Path(self.output_dir) / 'pling_dcj_dists_by_length.tsv'
         plasmid_info = plasmid_info.set_index('plasmid_id') if 'plasmid_id' in plasmid_info.columns else plasmid_info
         pling_dcj_dists = pd.read_csv(Path(self.output_dir) / 'all_plasmids_distances.tsv', sep='\t')
+
+        # Normalize column names in distance dataframe if needed
+        col_map = {}
+        for c in pling_dcj_dists.columns:
+            c_clean = str(c).strip().lower().replace('-', '_').replace(' ', '_')
+            if c_clean in ['plasmid1', 'query', 'p1', 'plasmid_1']:
+                col_map[c] = 'plasmid_1'
+            elif c_clean in ['plasmid2', 'ref', 'reference', 'p2', 'plasmid_2']:
+                col_map[c] = 'plasmid_2'
+            elif c_clean in ['dist', 'distance']:
+                col_map[c] = 'distance'
+        if col_map:
+            pling_dcj_dists = pling_dcj_dists.rename(columns=col_map)
+
+        # Detect plasmid size/length column name
+        size_col = None
+        for col_name in ['size', 'length', 'total_length', 'len']:
+            if col_name in plasmid_info.columns:
+                size_col = col_name
+                break
+
+        def _get_len(pid):
+            if size_col and pid in plasmid_info.index:
+                val = plasmid_info.loc[pid, size_col]
+                if isinstance(val, pd.Series):
+                    val = val.iloc[0]
+                try:
+                    return float(val) if pd.notna(val) else min_len
+                except (ValueError, TypeError):
+                    return min_len
+            return min_len
+
         pling_dcj_dists['distance_y'] = pling_dcj_dists['distance']
-        pling_dcj_dists['length1'] = pling_dcj_dists['plasmid_1'].map(lambda s : plasmid_info.loc[s, 'size'] if s in plasmid_info.index.tolist() else min_len)
-        pling_dcj_dists['length2'] = pling_dcj_dists['plasmid_2'].map(lambda s: plasmid_info.loc[s, 'size'] if s in plasmid_info.index.tolist() else min_len)
+        pling_dcj_dists['length1'] = pling_dcj_dists['plasmid_1'].map(_get_len)
+        pling_dcj_dists['length2'] = pling_dcj_dists['plasmid_2'].map(_get_len)
         pling_dcj_dists = pling_dcj_dists.dropna(how='any')
         pling_dcj_dists['distance'] = pling_dcj_dists.apply(lambda r: self.get_dcj_dist_by_length(r, threshold=dcj_threshold, min_len=min_len, dcj_threshold=dcj_num), axis=1)
     

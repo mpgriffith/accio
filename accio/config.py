@@ -98,6 +98,7 @@ class AnalysisConfig:
     GENOMAD_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for genomad plasmid score
     PLASME_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for PLASMe plasmid score
     CLASSIFIER = 'plasme'  # choices: 'plasme', 'genomad', 'both'
+    FIND_NOVEL_PLASMIDS = True  # Whether to identify and analyze novel plasmids
     
     # Read mapping and support configurations
     READS_SUPPORT_ONLY = False
