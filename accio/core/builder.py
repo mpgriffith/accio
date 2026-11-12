@@ -62,7 +62,7 @@ class DatabaseBuilder:
                       no_cluster: bool=False,
                       deduplicate: bool = False,
                       validate_sequences: bool = False,
-                      cluster_threshold: float = 0.95,
+                      cluster_threshold: float = 99.95,
                       use_all: bool = False) -> Dict[str, Any]:
         """
         Build plasmid database from input sequences.
@@ -76,17 +76,15 @@ class DatabaseBuilder:
             run_edit_dcj: Whether to run edit_dcj (True=force, False=skip, None=run if communities.pkl exists)
             min_size: Minimum sequence length to include
             max_size: Maximum sequence length to include
-            check_circular: Check for circular sequences
+            check_circular: Filter for circular sequences only (if True)
             deduplicate: Remove duplicate sequences
             validate_sequences: Validate sequence quality
-            cluster_threshold: Mash distance threshold for clustering
+            cluster_threshold: Skani ANI percentage threshold for clustering (default: 99.95)
             
         Returns:
             Dictionary with build statistics
         """
         self.logger.info("Starting database construction...")
-        
-        check_circular = True if use_all == False else check_circular
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -393,7 +391,9 @@ class DatabaseBuilder:
             'total_input': 0,
             'filtered_length': 0,
             'filtered_quality': 0,
-            'circular_count': 0
+            'filtered_circular': 0,
+            'circular_count': 0,
+            'duplicate_ids_renamed': 0
         }
         
         for file_path in input_files:
@@ -402,10 +402,9 @@ class DatabaseBuilder:
             try:
                 for record in SeqIO.parse(file_path, "fasta"):
                     stats['total_input'] += 1
-                    
 
                     # Filter by length
-                    if  not (self.min_length <= len(record.seq) <= self.max_length):
+                    if not (self.min_length <= len(record.seq) <= self.max_length):
                         stats['filtered_length'] += 1
                         continue
                     
@@ -415,16 +414,32 @@ class DatabaseBuilder:
                         continue
                     
                     # Check for circularity
-                    if check_circular:
-                        is_circular = self._check_circularity(record)
-                        if is_circular:
-                            record.annotations['topology'] = 'circular'
-                            stats['circular_count'] += 1
-                        else:
-                            continue
+                    is_circular = self._check_circularity(record)
+                    if is_circular:
+                        record.annotations['topology'] = 'circular'
+                        stats['circular_count'] += 1
+                    elif check_circular:
+                        stats['filtered_circular'] += 1
+                        continue
                     
                     # Clean sequence ID
                     clean_id = self._clean_sequence_id(record.id)
+
+                    # Handle duplicate IDs across files or within files
+                    if clean_id in sequences:
+                        file_stem = Path(file_path).stem
+                        self.logger.warning(
+                            f"Duplicate sequence ID '{clean_id}' encountered in {file_path}. "
+                            f"Disambiguating sequence ID to prevent overwriting."
+                        )
+                        dup_idx = 1
+                        disambiguated_id = f"{clean_id}_{file_stem}"
+                        while disambiguated_id in sequences:
+                            dup_idx += 1
+                            disambiguated_id = f"{clean_id}_{file_stem}_{dup_idx}"
+                        clean_id = disambiguated_id
+                        stats['duplicate_ids_renamed'] += 1
+
                     record.id = clean_id
                     record.name = clean_id
                     
@@ -538,7 +553,7 @@ class DatabaseBuilder:
             default_metadata = pd.DataFrame({
                 'plasmid_id': list(missing_ids),
                 'cluster_id': ['unknown'] * len(missing_ids),
-                'rep_types': [None] * len(missing_ids),
+                'rep_type': ['unknown'] * len(missing_ids),
                 'length': [0] * len(missing_ids),  # Will be updated later
                 'source': ['user_provided'] * len(missing_ids)
             })
@@ -638,6 +653,10 @@ class DatabaseBuilder:
             })
             return clus_seqs, clus_data
             
+        # Convert fractional threshold (e.g. 0.9995 or 0.95) to percentage (e.g. 99.95)
+        if 0 < sim_threshold <= 1.0:
+            sim_threshold = sim_threshold * 100.0
+
         # Run skani
         self.logger.info(f"Clustering plasmids with skani (threshold={sim_threshold}%)")
 
@@ -807,7 +826,15 @@ class DatabaseBuilder:
         metadata_df['plasmidfinder_reps'] = metadata_df.index.map(lambda s: pf_summary.loc[s] if s in pf_summary.index else None)
         self.logger.debug("\n" + metadata_df.head().to_string())
 
-        metadata_df['rep_types'] = metadata_df.apply(lambda r: self._combine_rep_types([r['plasmidfinder_reps']]), axis=1)
+        metadata_df['rep_type'] = metadata_df.apply(
+            lambda r: self._combine_rep_types([
+                r.get('plasmidfinder_reps'),
+                r.get('rep_type(s)') if 'rep_type(s)' in r else None,
+                r.get('rep_type') if 'rep_type' in r and r.get('rep_type') != 'unknown' else None
+            ]), axis=1
+        ).replace('', 'unknown').fillna('unknown')
+        if 'rep_types' in metadata_df.columns:
+            metadata_df = metadata_df.drop(columns=['rep_types'])
         metadata_df['amr_genes'] = metadata_df.index.map(lambda s: ','.join(amrfinder_results[amrfinder_results['Contig id'] == s]['Element symbol'].unique()))
 
         
@@ -854,6 +881,14 @@ class DatabaseBuilder:
             mask = metadata_df['plasmid_id'] == seq_id
             if mask.any():
                 metadata_df.loc[mask, 'length'] = len(record.seq)
+
+        # Ensure single canonical rep_type column and drop redundant rep_types
+        if 'rep_types' in metadata_df.columns:
+            if 'rep_type' not in metadata_df.columns or (metadata_df['rep_type'] == 'unknown').all():
+                metadata_df['rep_type'] = metadata_df['rep_types'].apply(
+                    lambda x: x if (isinstance(x, str) and x and x != '-') else 'unknown'
+                )
+            metadata_df = metadata_df.drop(columns=['rep_types'])
         
         # Write metadata file
         metadata_path = os.path.join(output_dir, "plasmidDB_info.csv")

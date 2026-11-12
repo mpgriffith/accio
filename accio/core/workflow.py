@@ -176,7 +176,7 @@ class PlasmidAnalysisWorkflow:
                     length=row['size'],
                     plasmid_mash_db=mash_db,
                     other={'pling_type': row['pling_type']},
-                    rep_type=row.get('rep_types', None),
+                    rep_type=row.get('rep_type') if (pd.notna(row.get('rep_type')) and str(row.get('rep_type')).strip() not in ('', 'unknown')) else row.get('rep_types', None),
                     amr_genes = row.get('amr_genes', None),
                     group_amr_genes=row.get('subcommunity_amr_genes', None)
                 )

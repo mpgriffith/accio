@@ -60,7 +60,8 @@ def assign_plasmids(plasmids: Dict[str, Plasmid],
     while plasmids_to_process and contigs_available:
         # Select best candidate plasmid
         best_plasmid_id = _select_best_plasmid(
-            plasmids_to_process, plasmids, all_pling_counts
+            plasmids_to_process, plasmids, all_pling_counts,
+            min_score=config.MIN_ASSIGNMENT_SCORE
         )
         
         if best_plasmid_id is None:
@@ -148,7 +149,8 @@ def _get_pling_type_counts(plasmids: Dict[str, Plasmid]) -> pd.Series:
 
 def _select_best_plasmid(plasmids_to_process: List[str], 
                         plasmids: Dict[str, Plasmid],
-                        all_pling_counts: pd.Series) -> Optional[str]:
+                        all_pling_counts: pd.Series,
+                        min_score: float = 0.80) -> Optional[str]:
     """
     Select the best plasmid candidate for assignment.
     
@@ -160,7 +162,7 @@ def _select_best_plasmid(plasmids_to_process: List[str],
     # Filter to high-scoring plasmids
     high_score_plasmids = [
         p for p in plasmids_to_process 
-        if plasmids[p].score >= 0.80
+        if plasmids[p].score >= min_score
     ]
     
     if not high_score_plasmids:

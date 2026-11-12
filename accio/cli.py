@@ -456,8 +456,8 @@ Examples:
     clustering_group.add_argument(
         '--cluster_threshold', '--cluster-threshold',
         type=float,
-        default=0.95,
-        help='Similarity threshold for clustering (default: 0.95)'
+        default=99.95,
+        help='Similarity threshold for clustering as percentage (default: 99.95)'
     )
 
     clustering_group.add_argument(

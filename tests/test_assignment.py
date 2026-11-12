@@ -67,3 +67,22 @@ def test_assign_plasmids_single_match():
     assert assigned_contigs["c1"] == "pRef1"
     assert contig.assigned is True
 
+
+def test_select_best_plasmid_respects_min_score():
+    from accio.core.assignment import _select_best_plasmid
+    p_high = Plasmid(id="p_high", cluster_id="c1", pling_type="typeA", length=1000, plasmid_mash_db="db.msh")
+    p_high.score = 0.75
+    p_low = Plasmid(id="p_low", cluster_id="c2", pling_type="typeB", length=1000, plasmid_mash_db="db.msh")
+    p_low.score = 0.60
+
+    plasmids = {"p_high": p_high, "p_low": p_low}
+    pling_counts = pd.Series({"typeB": 10, "typeA": 1})
+
+    # With min_score=0.70, only p_high qualifies (score 0.75 >= 0.70)
+    best_with_70 = _select_best_plasmid(["p_high", "p_low"], plasmids, pling_counts, min_score=0.70)
+    assert best_with_70 == "p_high"
+
+    # With default min_score=0.80, neither qualifies, so fallback considers both and picks typeB (p_low) by pling counts
+    best_with_80 = _select_best_plasmid(["p_high", "p_low"], plasmids, pling_counts, min_score=0.80)
+    assert best_with_80 == "p_low"
+

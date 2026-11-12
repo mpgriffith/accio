@@ -109,6 +109,7 @@ accio create <input> -o <database_dir> [options]
 - `--min_length`: Minimum sequence length (default: 10000)
 - `--check_circular`: Detect and mark circular sequences (default: off)
 - `--no_plasmid_check`: Do not filter sequences by circularity / plasmid replicon checks
+- `--cluster_threshold`: Skani similarity percentage threshold for clustering (default: 99.95)
 - `--no_clustering`: Skip clustering step (skani) (false by default)
 
 **Examples:**

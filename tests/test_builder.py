@@ -354,3 +354,98 @@ def test_builder_threads_propagation():
     assert builder.pling_runner.config.THREADS == 8
     assert builder.amr_runner.config.THREADS == 8
 
+
+def test_non_circular_sequences_kept_by_default(tmp_path):
+    """Test that non-circular sequences are kept when check_circular is False."""
+    builder = DatabaseBuilder(min_length=100)
+    fasta_file = tmp_path / "plasmids.fasta"
+    fasta_file.write_text(">seq_linear\n" + "ATGC" * 50 + "\n")
+
+    sequences, stats = builder._process_input_sequences([str(fasta_file)], validate=False, check_circular=False)
+    assert "seq_linear" in sequences
+    assert stats['total_input'] == 1
+    assert stats['filtered_circular'] == 0
+
+
+def test_non_circular_sequences_filtered_when_flag_true(tmp_path):
+    """Test that non-circular sequences are filtered when check_circular is True."""
+    builder = DatabaseBuilder(min_length=100)
+    fasta_file = tmp_path / "plasmids.fasta"
+    fasta_file.write_text(">seq_linear\n" + "ATGC" * 50 + "\n>seq_circ description circular=true\n" + "ATGC" * 50 + "\n")
+
+    sequences, stats = builder._process_input_sequences([str(fasta_file)], validate=False, check_circular=True)
+    assert "seq_linear" not in sequences
+    assert "seq_circ" in sequences
+    assert stats['filtered_circular'] == 1
+    assert stats['circular_count'] == 1
+
+
+def test_duplicate_sequence_ids_disambiguated(tmp_path):
+    """Test that duplicate sequence IDs across files are disambiguated and not overwritten."""
+    builder = DatabaseBuilder(min_length=100)
+    file1 = tmp_path / "file1.fasta"
+    file2 = tmp_path / "file2.fasta"
+    file1.write_text(">dup_plasmid\n" + "ATGC" * 50 + "\n")
+    file2.write_text(">dup_plasmid\n" + "CGTA" * 50 + "\n")
+
+    sequences, stats = builder._process_input_sequences([str(file1), str(file2)], validate=False, check_circular=False)
+    assert len(sequences) == 2
+    assert "dup_plasmid" in sequences
+    assert "dup_plasmid_file2" in sequences
+    assert stats['duplicate_ids_renamed'] == 1
+
+
+def test_rep_type_populated_from_rep_types(tmp_path):
+    """Test that rep_type column is populated from rep_types and not left as 'unknown'."""
+    builder = DatabaseBuilder()
+    meta_df = pd.DataFrame([
+        {'plasmid_id': 'p1', 'cluster_id': 'c1', 'length': 5000, 'rep_types': 'IncFII,IncFIA'},
+        {'plasmid_id': 'p2', 'cluster_id': 'c2', 'length': 10000, 'rep_types': None}
+    ])
+    seq1 = SeqRecord(Seq("ATGC" * 1250), id="p1")
+    seq2 = SeqRecord(Seq("CGTA" * 2500), id="p2")
+
+    builder._write_database_files([seq1, seq2], meta_df, str(tmp_path))
+    info_path = tmp_path / "plasmidDB_info.csv"
+    assert info_path.exists()
+    out_df = pd.read_csv(info_path)
+    assert out_df.loc[out_df['plasmid_id'] == 'p1', 'rep_type'].iloc[0] == 'IncFII,IncFIA'
+    assert out_df.loc[out_df['plasmid_id'] == 'p2', 'rep_type'].iloc[0] == 'unknown'
+    assert 'rep_types' not in out_df.columns, "Redundant rep_types column should be dropped in favor of single rep_type column"
+
+
+def test_cluster_threshold_skani_fraction_conversion(tmp_path, monkeypatch):
+    """Test that cluster_plasmids_skani handles percentage (99.95), fraction (0.9995), and distance (0.05) equivalently."""
+    import scipy.cluster.hierarchy as sch
+    builder = DatabaseBuilder()
+    fasta_file = tmp_path / "plasmids.fasta"
+    fasta_file.write_text(">p1\n" + "ATGC" * 50 + "\n>p2\n" + "ATGC" * 50 + "\n")
+
+    def mock_ska_dist(input_fa, output_file):
+        df = pd.DataFrame([
+            {'Ref_name': 'p1', 'Query_name': 'p2', 'ANI': 99.98, 'Align_fraction_ref': 99.0, 'Align_fraction_query': 99.0}
+        ])
+        df.to_csv(output_file, sep='\t', index=False)
+
+    monkeypatch.setattr(builder.skani_runner, "run_ska_dist", mock_ska_dist)
+
+    captured_t = []
+    real_fcluster = sch.fcluster
+
+    def mock_fcluster(Z, t=None, criterion=None, **kwargs):
+        captured_t.append(t)
+        return real_fcluster(Z, t=t, criterion=criterion, **kwargs)
+
+    monkeypatch.setattr(sch, "fcluster", mock_fcluster)
+
+    # Calling with percentage 99.95
+    builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=99.95)
+    # Calling with fraction 0.9995
+    builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=0.9995)
+    # Calling with distance 0.05
+    builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=0.05)
+
+    assert len(captured_t) == 3
+    for t_val in captured_t:
+        assert abs(t_val - 0.05) < 1e-4, f"Expected thres=0.05, got {t_val}"
+

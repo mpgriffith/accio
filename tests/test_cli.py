@@ -91,11 +91,12 @@ def test_main_parser_check_subcommand():
 def test_main_parser_create_options_batch1():
     parser = create_main_parser()
 
-    # Default min_length is 10000, check_circular is False, containment_distance is 0.3
+    # Default min_length is 10000, check_circular is False, containment_distance is 0.3, cluster_threshold is 99.95
     args_default = parser.parse_args(['create', 'plasmids.fasta', '-o', 'out_db'])
     assert args_default.min_length == 10000
     assert args_default.check_circular is False
     assert args_default.containment_distance == 0.3
+    assert args_default.cluster_threshold == 99.95
     assert args_default.recursive is False
     assert args_default.validate_sequences is False
     assert args_default.no_plasmid_check is False
