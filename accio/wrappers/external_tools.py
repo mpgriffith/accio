@@ -660,19 +660,19 @@ def validate_databases(db_dir: str) -> Dict[str, bool]:
         Dictionary mapping database names to existence status
     """
     from ..config import DatabaseFiles
-    
+    db_path = Path(db_dir)
+
     required_files = {
-        'plasmid_db': os.path.join(db_dir, DatabaseFiles.PLASMID_DB),
-        'plasmidfinder_db': os.path.join(db_dir, DatabaseFiles.PLASMIDFINDER_DB),
-        'resfinder_db': os.path.join(db_dir, DatabaseFiles.RESFINDER_DB),
-        'mob_db': os.path.join(db_dir, DatabaseFiles.MOB_DB),
-        'rep_db': os.path.join(db_dir, DatabaseFiles.REP_DB),
-        'plasmid_info': os.path.join(db_dir, DatabaseFiles.PLASMID_INFO),
-        'mash_db': os.path.join(db_dir, DatabaseFiles.MASH_DB)
+        'plasmid_info': db_path / DatabaseFiles.PLASMID_INFO,
+        'plasmid_fasta': db_path / DatabaseFiles.PLASMID_DB,
+        'plasmid_blast': db_path / DatabaseFiles.PLASMID_BLAST,
+        'mash_db': db_path / DatabaseFiles.MASH_DB,
+        'plasmidfinder_blast': db_path / DatabaseFiles.PLASMIDFINDER_DB,
+        'rep_blast': db_path / DatabaseFiles.REP_DB,
     }
-    
+
     existence = {}
     for name, path in required_files.items():
-        existence[name] = os.path.exists(path)
-        
+        existence[name] = path.exists()
+
     return existence

@@ -53,3 +53,26 @@ def test_check_tool_availability_bwa_and_new_tools(monkeypatch):
         assert tool in avail, f"{tool} should be in checked tools"
         assert avail[tool]['available'] is True
 
+
+def test_validate_databases(tmp_path):
+    """Test that validate_databases checks the actual built DB files and not obsolete ResFinder."""
+    from accio.wrappers.external_tools import validate_databases
+
+    # Empty dir should fail all
+    status_empty = validate_databases(str(tmp_path))
+    assert not any(status_empty.values())
+    assert 'resfinder_db' not in status_empty, "ResFinder should not be checked"
+
+    # Create all required DB files
+    (tmp_path / 'plasmidDB_info.csv').write_text("info")
+    (tmp_path / 'plasmidDB.fasta').write_text(">p\nATGC\n")
+    (tmp_path / 'plasmidDB.nhr').write_text("nhr")
+    (tmp_path / 'plasmidDB.fasta.msh').write_text("msh")
+    (tmp_path / 'PlasmidFinder.nhr').write_text("pf_nhr")
+    (tmp_path / 'repetitive.dna.fas.nhr').write_text("rep_nhr")
+
+    status_full = validate_databases(str(tmp_path))
+    assert all(status_full.values()), f"All database files should exist, got: {status_full}"
+    assert status_full['plasmidfinder_blast'] is True
+    assert status_full['rep_blast'] is True
+

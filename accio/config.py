@@ -138,13 +138,12 @@ class FilePatterns:
 class DatabaseFiles:
     """Expected database files and their purposes."""
     
-    PLASMID_DB = "plasmidDB.fasta"
-    PLASMIDFINDER_DB = "PlasmidFinder"
-    RESFINDER_DB = "ResFinder"
-    MOB_DB = "mob_cluster/references_updated.fasta"
-    REP_DB = "repetitive.dna.fas"
     PLASMID_INFO = "plasmidDB_info.csv"
+    PLASMID_DB = "plasmidDB.fasta"
+    PLASMID_BLAST = "plasmidDB.nhr"
     MASH_DB = "plasmidDB.fasta.msh"
+    PLASMIDFINDER_DB = "PlasmidFinder.nhr"
+    REP_DB = "repetitive.dna.fas.nhr"
 
 def get_config() -> AnalysisConfig:
     """Get the default analysis configuration."""
