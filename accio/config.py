@@ -83,6 +83,7 @@ class AnalysisConfig:
     # Assignment thresholds
     MIN_BLAST_SIMILARITY = 85
     MIN_PLASMID_SCORE = 0.80
+    MIN_ASSIGNMENT_SCORE = 0.80
     MIN_MASH_SCORE = 0.996
     
     # Use Pling community counts for choosing best plasmid
@@ -94,6 +95,7 @@ class AnalysisConfig:
     NUCMER_DIAGDIFF = 20
     NUCMER_BREAKLEN = 500
     GENOMAD_DISABLE_NN_PRED = True
+    GENOMAD_SPLITS = None
     GENOMAD_DB_PATH = os.environ.get('GENOMAD_DB', 'genomad_db')
     GENOMAD_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for genomad plasmid score
     PLASME_PLASMID_SCORE_THRESHOLD = 0.75 # Default threshold for PLASMe plasmid score

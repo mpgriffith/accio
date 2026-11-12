@@ -41,6 +41,7 @@ class PlasmidAnalysisWorkflow:
         self.mapping_runner = ReadMappingRunner(config)
         self.mob_runner = MOBRunner(config)
         self.amr_runner = AMRRunner(config)
+        self.warnings = []
         
     def run(self, fasta_file: str, reads: Optional[List[str]], 
             db_dir: str, output_dir: str, 
@@ -63,6 +64,7 @@ class PlasmidAnalysisWorkflow:
             Dictionary containing analysis results
         """
         self.logger.info("Starting plasmid analysis workflow")
+        self.warnings = []
         
         # Extract sample name
         sample_name = sample_name if sample_name else Path(fasta_file).stem
@@ -143,6 +145,8 @@ class PlasmidAnalysisWorkflow:
             'plasmids_assigned': assignment_results['plasmids_assigned'],
             'novel_plasmid_contigs': novel_results.get('contigs', []),
             'output_files': output_files,
+            'warnings': self.warnings,
+            'status': 'completed_with_warnings' if self.warnings else 'completed',
             'summary': self._create_summary(assignment_results, novel_results)
         }
         
@@ -279,7 +283,9 @@ class PlasmidAnalysisWorkflow:
                         if keep_intermediate:
                             self.intermediate_files.extend(plasme_files.values())
                     except ExternalToolError as e:
-                        self.logger.warning(f"PLASMe analysis failed: {e}")
+                        err_msg = f"PLASMe analysis failed: {e}"
+                        self.logger.warning(err_msg)
+                        self.warnings.append(err_msg)
                 
                 if self.config.CLASSIFIER in ['genomad', 'both']:
                     self.logger.info("Running geNomad analysis")
@@ -290,8 +296,14 @@ class PlasmidAnalysisWorkflow:
                         summary_file = genomad_dir / f"{stem}_summary" / f"{stem}_plasmid_summary.tsv"
                         if summary_file.exists():
                             results['genomad'] = self.genomad_runner.read_genomad_results(str(summary_file))
+                        else:
+                            warn_msg = f"geNomad did not produce expected summary file: {summary_file}"
+                            self.logger.warning(warn_msg)
+                            self.warnings.append(warn_msg)
                     except ExternalToolError as e:
-                        self.logger.warning(f"geNomad analysis failed: {e}")
+                        err_msg = f"geNomad analysis failed: {e}"
+                        self.logger.warning(err_msg)
+                        self.warnings.append(err_msg)
             else:
                 self.logger.info("Skipping plasmid classifier analysis (novel plasmid search disabled)")
                 
@@ -881,6 +893,8 @@ class PlasmidAnalysisWorkflow:
         novel_contigs = novel_results.get('contigs', [])
         
         return {
+            'status': 'completed_with_warnings' if self.warnings else 'completed',
+            'warnings': list(self.warnings),
             'plasmid_db_used': self.config.plasmid_db,
             'num_plasmids_assigned': len(assigned_plasmids),
             'num_novel_plasmid_contigs': len(novel_contigs),

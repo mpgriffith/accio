@@ -557,6 +557,10 @@ class GenomadRunner:
         if self.config.GENOMAD_DISABLE_NN_PRED:
             cmd.append('--disable-nn-classification')
 
+        splits = getattr(self.config, 'GENOMAD_SPLITS', None)
+        if splits:
+            cmd.extend(['--splits', str(splits)])
+
         cmd.extend([input_fasta, output_file, self.config.GENOMAD_DB_PATH])
         
         try:

@@ -39,11 +39,18 @@ def test_main_parser_create_subcommand():
 def test_main_parser_find_subcommand_skip_novel_plasmids():
     parser = create_main_parser()
 
-    # Default find has skip_novel_plasmids = False and default classifier is genomad
+    # Default find has skip_novel_plasmids = False, default classifier is genomad, min_blast_similarity is 85, genomad_splits is None
     default_args = parser.parse_args(['find', 'assembly.fasta', '-d', 'my_db', '-o', 'res'])
     assert default_args.command == 'find'
     assert default_args.skip_novel_plasmids is False
     assert default_args.classifier == 'genomad'
+    assert default_args.min_blast_similarity == 85.0
+    assert default_args.genomad_splits is None
+
+    # Test --min_blast_similarity and --splits
+    custom_args = parser.parse_args(['find', 'assembly.fasta', '-d', 'my_db', '-o', 'res', '--min_blast_similarity', '90', '--splits', '8'])
+    assert custom_args.min_blast_similarity == 90.0
+    assert custom_args.genomad_splits == 8
 
     # Test --classifier none
     none_args = parser.parse_args(['find', 'assembly.fasta', '-d', 'my_db', '-o', 'res', '--classifier', 'none'])

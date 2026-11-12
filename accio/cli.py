@@ -175,6 +175,13 @@ def add_find_analyses_parsers(parser):
         default=0.80,
         help='Minimum plasmid assignment score (default: 0.80)'
     )
+
+    scoring_group.add_argument(
+        '--min_blast_similarity', '--min-blast-similarity',
+        type=float,
+        default=85.0,
+        help='Minimum BLAST similarity threshold for plasmid assignment (default: 85.0)'
+    )
     
     scoring_group.add_argument(
         '--min_identity',
@@ -223,6 +230,14 @@ def add_find_analyses_parsers(parser):
         '--genomad_db',
         help='Path to the geNomad database directory',
         default=os.environ.get('GENOMAD_DB', 'genomad_db')
+    )
+
+    classifier_group.add_argument(
+        '--genomad_splits', '--splits',
+        type=int,
+        default=None,
+        dest='genomad_splits',
+        help='Number of splits for geNomad to reduce memory consumption (e.g. 8)'
     )
 
     classifier_group.add_argument(
@@ -593,10 +608,13 @@ def handle_find_command(args: argparse.Namespace) -> int:
         config.MIN_IDENTITY = args.min_identity
         config.MIN_COVERAGE = args.min_coverage
         config.MIN_PLASMID_SCORE = args.min_score
+        config.MIN_ASSIGNMENT_SCORE = args.min_score
+        config.MIN_BLAST_SIMILARITY = getattr(args, 'min_blast_similarity', 85.0)
         config.MIN_MASH_SCORE = args.min_mash_score
         config.THREADS = args.threads
         config.CLASSIFIER = args.classifier
         config.GENOMAD_DB_PATH = args.genomad_db
+        config.GENOMAD_SPLITS = getattr(args, 'genomad_splits', None)
         config.plasmid_db = args.database # Explicitly set the database path in config
 
         config.USE_PLING_COMMUNITY_COUNTS = args.use_pling_type_counts
@@ -636,7 +654,13 @@ def handle_find_command(args: argparse.Namespace) -> int:
         )
         
         # Report results
-        logger.info("✅ Analysis completed successfully!")
+        if results.get('warnings'):
+            logger.warning("⚠️  Analysis finished with warnings:")
+            for w in results['warnings']:
+                logger.warning(f"   └─ {w}")
+            logger.warning("Classifier predictions or novel plasmid detection may be incomplete.")
+        else:
+            logger.info("✅ Analysis completed successfully!")
         
         if results.get('plasmids_assigned'):
             num_plasmids = len(results['plasmids_assigned'])
