@@ -23,7 +23,7 @@ from ..utils.filters import filter_overlaps
 class DatabaseBuilder: 
     """Build Accio plasmid databases from reference sequences."""
     
-    def __init__(self, threads: int = 4, min_length: int = 10000, max_length: int = 1000000):
+    def __init__(self, threads: int = 4, min_length: int = 10000, max_length: int = 1000000, config: Optional[AnalysisConfig] = None):
         """
         Initialize database builder.
         
@@ -31,6 +31,7 @@ class DatabaseBuilder:
             threads: Number of threads for parallel processing
             min_length: Minimum sequence length to include
             max_length: Maximum sequence length to include
+            config: Optional AnalysisConfig instance
         """
         self.threads = threads
         self.min_length = min_length
@@ -38,7 +39,7 @@ class DatabaseBuilder:
         self.logger = logging.getLogger(__name__)
         
         # Initialize tool runners with configured threads
-        config = AnalysisConfig()
+        config = config or AnalysisConfig()
         config.THREADS = threads
         self.config = config
         self.blast_runner = BLASTRunner(config=config)

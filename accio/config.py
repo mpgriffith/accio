@@ -89,6 +89,10 @@ class AnalysisConfig:
     # Use Pling community counts for choosing best plasmid
     USE_PLING_COMMUNITY_COUNTS = False
 
+    # MOB-suite environment configuration (allows separate conda env to resolve pandas split)
+    MOB_CONDA_ENV = os.environ.get('ACCIO_MOB_ENV', 'mob_suite')
+    MOB_BIN_DIR = os.environ.get('ACCIO_MOB_BIN_DIR', None)
+
     # External tool parameters
     THREADS = 4
     FASTANI_FRAG_LEN = 500

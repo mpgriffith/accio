@@ -39,6 +39,6 @@ setup(
     },
     include_package_data=True,
     package_data={
-        "accio": ["data/*.csv", "data/*.txt"],
+        "accio": ["data/*", "data/**/*"],
     },
 )

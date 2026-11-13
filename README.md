@@ -72,7 +72,10 @@ accio find <assembly.fasta> -d <database_dir> -o <output_dir> [options]
 - `--min_identity`: BLAST identity threshold (default: 75)
 - `--min_coverage`: BLAST coverage threshold (default: 75) 
 - `--min_score`: Minimum assignment score (default: 0.80)
+- `--min_blast_similarity`: Minimum BLAST similarity threshold (default: 85.0)
+- `--classifier`: Plasmid classifier (`genomad`, `plasme`, `both`, or `none`; default: `genomad`)
 - `--skip_novel_plasmids`: Skip finding and analyzing novel plasmid contigs (skips PLASMe/geNomad and MOB-recon)
+- `-k, --keep_intermediate`: Keep intermediate files including `{sample}_initial_plasmid_data.csv` candidate scores (super useful for diagnosing near-misses)
 - `-t, --threads`: Number of threads (default: 4)
 
 **Examples:**
@@ -152,37 +155,60 @@ accio check --all --databases /path/to/database
 
 ### Plasmid Discovery (`accio find`)
 
-- **`{sample}_plasmids_assigned.csv`**: Assigned plasmids with scores and metadata
-- **`{sample}_contig_analysis.csv`**: Per-contig analysis results  
-- **`{sample}_novel_plasmids.fasta`**: Novel plasmid sequences
-- **`{sample}_summary.json`**: Analysis summary and statistics
+- **`{sample}_plasmids_chosen.csv`**: Final chosen and assigned plasmids with scores, replicons, and AMR genes
+- **`{sample}_contig_data.csv`**: Per-contig assignment results, coverage, and classification
+- **`{sample}_novel_plasmid_contigs.fasta`**: Extracted novel plasmid contigs (identified via geNomad/PLASMe and MOB-recon)
+- **`{sample}_plasmid_{pling_type}_contigs.fasta`**: Contig FASTA files extracted for each assigned plasmid
+- **`{sample}_initial_plasmid_data.csv`**: Generated when using `-k / --keep_intermediate`, preserves full candidate score breakdowns for all reference plasmids (ideal for investigating near misses)
 
 ### Database Creation (`accio create`)
 
-- **`plasmidDB.fasta`**: Combined plasmid sequences
-- **`plasmidDB_info.csv`**: Plasmid metadata and clustering information
+- **`plasmidDB.fasta`**: Combined representative plasmid sequences
+- **`plasmidDB_info.csv`**: Plasmid metadata, clustering, pling types, and replicon calls
 - **`plasmidDB.*`**: BLAST database files (`.nhr`, `.nin`, `.nsq`)
 - **`plasmidDB.fasta.msh`**: Mash sketch database
+- **`PlasmidFinder.*`**: PlasmidFinder BLAST database
+- **`repetitive.dna.fas.*`**: Repetitive elements BLAST database
 - **`database_stats.txt`**: Database statistics and summary
 
 ##  Prerequisites
 
 ### Required External Tools
-- **BLAST+** (blastn, makeblastdb)
-- **Mash** (mash)
-- **MUMmer** (nucmer, show-coords)
-- **SAMtools** (samtools)
-- **BWA** or **minimap2** (for read mapping)
-- **MOB-suite** (plasmid analysis)
-- **PLASme** (ML-based plasmid prediction) or **geNomad**
-- **skani** (ANI calculation for clustering plasmids)
-- **AMRFinder** 
+- **BLAST+** (`blastn`, `makeblastdb`)
+- **Mash** (`mash`)
+- **MUMmer 4** (`nucmer`, `show-coords`, `show-snps`, `delta-filter`)
+- **SAMtools** (`samtools`)
+- **BWA** (`bwa`) or **minimap2** (`minimap2`) (for read mapping)
+- **skani** (ANI calculation for plasmid clustering)
+- **NCBI AMRFinderPlus** (`amrfinder`)
+- **MOB-suite** (`mob_recon`, `mob_typer`, `mob_cluster`)
+- **Pling** ($\ge$ 3.0) & **Plasnet** ($\ge$ 0.7) (for plasmid community grouping)
+- **geNomad** or **PLASMe** (machine learning plasmid classification)
 
-
-Install tools via conda:
+Install core bioinformatics tools via conda:
 ```bash
-conda install -c bioconda blast mash mummer samtools bwa minimap2 pysam mob_suite skani amrfinder
+conda install -c conda-forge -c bioconda blast mash mummer4 samtools bwa minimap2 pysam skani ncbi-amrfinderplus
 ```
+
+### Environment & Dependency Notes (MOB-suite vs. Pling/Plasnet)
+
+> [!NOTE]
+> **Pling 3** and **Plasnet 0.7** require `pandas >= 2.0`, while Bioconda's `mob_suite` package pins `pandas <= 1.5.3`. Because of this constraint, MOB-suite and Pling cannot reside in the same single Conda environment.
+>
+> **Accio's Automatic Solution**:
+> Accio runs on modern Python (`pandas >= 2.0`) alongside Pling and Plasnet, and **automatically routes MOB-suite calls** (`mob_recon`, `mob_typer`, `mob_cluster`) to a dedicated `mob_suite` Conda environment if they are not in your main PATH.
+>
+> 1. In your main Accio environment (`pandas >= 2`), install dependencies:
+>    ```bash
+>    pip install pling plasnet
+>    ```
+> 2. Create the companion MOB-suite environment in one step:
+>    ```bash
+>    accio setup-mob
+>    ```
+>    *(or manually: `conda create -y -n mob_suite -c bioconda mob_suite`)*
+> 
+> Accio will automatically detect and execute MOB-suite tools inside `mob_suite` without requiring manual environment activation or wrapper scripts! You can also customize the environment with `--mob_env <env_name>` or specify custom binaries via `--mob_bin_dir <dir>`.
 
 ## 🧬 Algorithm Overview
 

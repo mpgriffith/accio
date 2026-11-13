@@ -392,11 +392,52 @@ class ReadMappingRunner:
         
 
 class MOBRunner:
-    """Wrapper for MOB-suite operations."""
+    """Wrapper for MOB-suite operations with multi-environment support."""
     
     def __init__(self, config: Optional[AnalysisConfig] = None):
         self.config = config or AnalysisConfig()
         
+    def _resolve_tool(self, tool_name: str) -> List[str]:
+        """
+        Resolve the command prefix for a MOB-suite tool.
+        Checks in order:
+        1. Custom directory configured in config.MOB_BIN_DIR or ACCIO_MOB_BIN_DIR
+        2. Direct executable on PATH (shutil.which)
+        3. Configured Conda environment (config.MOB_CONDA_ENV or ACCIO_MOB_ENV, default 'mob_suite')
+           via conda/mamba/micromamba run
+        4. Fallback to direct tool name
+        """
+        bin_dir = getattr(self.config, 'MOB_BIN_DIR', None) or os.environ.get('ACCIO_MOB_BIN_DIR')
+        if bin_dir:
+            cand = os.path.join(bin_dir, tool_name)
+            if shutil.which(cand):
+                return [cand]
+            if os.name == 'nt' and shutil.which(cand + '.exe'):
+                return [cand + '.exe']
+
+        if shutil.which(tool_name):
+            return [tool_name]
+
+        env_name = getattr(self.config, 'MOB_CONDA_ENV', None) or os.environ.get('ACCIO_MOB_ENV', 'mob_suite')
+        if env_name:
+            conda_exe = shutil.which('mamba') or shutil.which('conda') or shutil.which('micromamba')
+            if conda_exe:
+                return [conda_exe, 'run', '--no-capture-output', '-n', env_name, tool_name]
+
+        return [tool_name]
+
+    def _format_mob_error(self, tool_name: str, err: Exception) -> str:
+        """Provide detailed diagnostic error message for MOB-suite failures."""
+        env_name = getattr(self.config, 'MOB_CONDA_ENV', None) or os.environ.get('ACCIO_MOB_ENV', 'mob_suite')
+        return (
+            f"{tool_name} execution failed ({str(err)}).\n"
+            f"Note: MOB-suite requires pandas <= 1.5.3 while Pling/Plasnet requires pandas >= 2.0.\n"
+            f"If MOB-suite is not installed in your PATH, you can set up a dedicated Conda environment:\n"
+            f"    conda create -n {env_name} -c bioconda mob_suite\n"
+            f"Accio will automatically detect and run MOB-suite inside the '{env_name}' environment.\n"
+            f"(Or pass --mob_env <env_name> if using a different environment name, or --skip_novel_plasmids)."
+        )
+
     def run_mob_recon(self, input_fasta: str, output_dir: str, plasmid_db: str = None) -> Dict[str, str]:
         """
         Run MOB-recon for plasmid reconstruction.
@@ -409,15 +450,15 @@ class MOBRunner:
         Raises:
             ExternalToolError: If MOB-recon execution fails. Returns dict of output files.
         """
-        cmd = [
-            'mob_recon', '-i', input_fasta, 
+        cmd = self._resolve_tool('mob_recon') + [
+            '-i', input_fasta, 
             '-o', output_dir, '--force', '-u'
         ]
      
         try:
             subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            raise ExternalToolError(f"MOB-recon failed: {str(e)}")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise ExternalToolError(self._format_mob_error('MOB-recon', e))
         
         output_files = {
             "mobtyper_results": os.path.join(output_dir, 'mobtyper_results.txt'),
@@ -435,22 +476,23 @@ class MOBRunner:
         """
         Run MOB-typer for plasmid type identification.
         """
-        cmd = ['mob_typer', 
-               '-i', input_fasta, 
-               '-o', output_file,
-               '-n', str(self.config.THREADS)]
+        cmd = self._resolve_tool('mob_typer') + [
+            '-i', input_fasta, 
+            '-o', output_file,
+            '-n', str(self.config.THREADS)
+        ]
         if multi:
             cmd += ['-x']
         if sample_id:
             cmd += ['-s', sample_id]
         if plasmid_meta:
-            cmd +=['-m', plasmid_meta,
-                   '--plasmid_mash_db', plasmid_mash_db]
+            cmd += ['-m', plasmid_meta,
+                    '--plasmid_mash_db', plasmid_mash_db]
         
         try:
             subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            raise ExternalToolError(f"MOB-typer failed: {str(e)}")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise ExternalToolError(self._format_mob_error('MOB-typer', e))
         return output_file
 
     def run_mob_cluster(self, input_fasta: str, output_dir: str,
@@ -461,22 +503,22 @@ class MOBRunner:
         """
         Run MOB-cluster for plasmid clustering.
         """
-        cmd = ['mob_cluster', 
-                   '-m' 'build' if  not previous_mob_db else 'update',
-                   '-t', taxonomy_file, 
-                   '-p', mob_typer_results, 
-                   '-o', output_dir, 
-                   '-f', input_fasta,
-                   '--primary_cluster_dist', str(primary_cluster_dist),
-                   '--secondary_cluster_dist', str(secondary_cluster_dist),
-                   ]
+        cmd = self._resolve_tool('mob_cluster') + [
+            '-m', 'build' if not previous_mob_db else 'update',
+            '-t', taxonomy_file, 
+            '-p', mob_typer_results, 
+            '-o', output_dir, 
+            '-f', input_fasta,
+            '--primary_cluster_dist', str(primary_cluster_dist),
+            '--secondary_cluster_dist', str(secondary_cluster_dist),
+        ]
         if previous_mob_db:
             cmd += ['-c', previous_mob_db,
                     '-r', previous_mob_fastas]
         try:
             subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            raise ExternalToolError(f"MOB-cluster failed: {str(e)}")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise ExternalToolError(self._format_mob_error('MOB-cluster', e))
 
 
 
@@ -606,9 +648,9 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
         'samtools': {'cmd': 'samtools --version', 'install': 'conda install -c bioconda samtools'},
         'skani': {'cmd': 'skani --version', 'install': 'conda install -c bioconda skani'},
         'amrfinder': {'cmd': 'amrfinder --version', 'install': 'conda install -c bioconda ncbi-amrfinderplus'},
-        'mob_recon': {'cmd': 'mob_recon --version', 'install': 'pip install mob-suite'},
-        'mob_typer': {'cmd': 'mob_typer --version', 'install': 'pip install mob-suite'},
-        'mob_cluster': {'cmd': 'mob_cluster --help', 'install': 'pip install mob-suite'},
+        'mob_recon': {'cmd': 'mob_recon --version', 'install': 'conda create -n mob_suite -c bioconda mob_suite (or accio setup-mob)'},
+        'mob_typer': {'cmd': 'mob_typer --version', 'install': 'conda create -n mob_suite -c bioconda mob_suite (or accio setup-mob)'},
+        'mob_cluster': {'cmd': 'mob_cluster --help', 'install': 'conda create -n mob_suite -c bioconda mob_suite (or accio setup-mob)'},
         'pling': {'cmd': 'pling --help', 'install': 'conda install -c bioconda pling'},
         'plasnet': {'cmd': 'plasnet --help', 'install': 'pip install plasnet'},
         'genomad': {'cmd': 'genomad --version', 'install': 'pip install genomad'},
@@ -624,6 +666,17 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
         }
         cmd_parts = shlex.split(info['cmd'])
         binary = cmd_parts[0]
+        tool_note = None
+
+        if binary in ['mob_recon', 'mob_typer', 'mob_cluster']:
+            mob_runner = MOBRunner()
+            resolved = mob_runner._resolve_tool(binary)
+            if resolved != [binary]:
+                cmd_parts = resolved + cmd_parts[1:]
+                binary = cmd_parts[0]
+                env_used = getattr(mob_runner.config, 'MOB_CONDA_ENV', 'mob_suite')
+                tool_note = f"via conda env {env_used}"
+
         if not shutil.which(binary):
             continue
 
@@ -635,6 +688,8 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
             )
             if res.returncode == 0:
                 availability[tool]['available'] = True
+                if tool_note:
+                    availability[tool]['note'] = tool_note
             elif binary in ['bwa', 'bwa-mem2']:
                 combined = res.stdout + res.stderr
                 if b'Program: bwa' in combined or b'Usage: bwa' in combined:

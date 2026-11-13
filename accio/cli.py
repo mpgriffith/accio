@@ -97,6 +97,7 @@ Examples:
     add_collate_parser(subparsers)
     add_multi_parser(subparsers)
     add_query_parser(subparsers)
+    add_setup_mob_parser(subparsers)
 
     return parser
 
@@ -245,6 +246,20 @@ def add_find_analyses_parsers(parser):
         action='store_true',
         default=False,
         help='Skip finding and analyzing novel plasmid contigs (skips PLASMe/geNomad and MOB-recon)'
+    )
+
+    classifier_group.add_argument(
+        '--mob_env', '--mob-env',
+        dest='mob_env',
+        default=None,
+        help="Conda environment name for MOB-suite (default: 'mob_suite' or ACCIO_MOB_ENV)"
+    )
+
+    classifier_group.add_argument(
+        '--mob_bin_dir', '--mob-bin-dir',
+        dest='mob_bin_dir',
+        default=None,
+        help="Directory containing MOB-suite binaries (mob_recon, mob_typer, mob_cluster)"
     )
 
     # Read mapping and support options
@@ -482,6 +497,20 @@ Examples:
         dest='no_clustering',
         help='Do not cluster plasmid sequences'
     )
+
+    create_parser.add_argument(
+        '--mob_env', '--mob-env',
+        dest='mob_env',
+        default=None,
+        help="Conda environment name for MOB-suite (default: 'mob_suite' or ACCIO_MOB_ENV)"
+    )
+
+    create_parser.add_argument(
+        '--mob_bin_dir', '--mob-bin-dir',
+        dest='mob_bin_dir',
+        default=None,
+        help="Directory containing MOB-suite binaries (mob_recon, mob_typer, mob_cluster)"
+    )
     
 
 
@@ -539,6 +568,43 @@ def add_multi_parser(subparsers) -> None:
     multi_parser.add_argument('-o', '--output_dir', '--output', required=True, dest='output_dir', help="Parent directory for all output.")
 
     add_find_analyses_parsers(multi_parser) 
+
+
+def add_setup_mob_parser(subparsers) -> None:
+    """Add the 'setup-mob' subcommand parser."""
+    mob_parser = subparsers.add_parser(
+        'setup-mob',
+        help='Create dedicated Conda environment for MOB-suite (resolves pandas version split)'
+    )
+    mob_parser.add_argument(
+        '-n', '--name', '--env-name',
+        dest='env_name',
+        default='mob_suite',
+        help="Name of conda environment to create (default: 'mob_suite')"
+    )
+
+
+def handle_setup_mob_command(args: argparse.Namespace) -> int:
+    """Create dedicated conda environment for MOB-suite."""
+    logger = logging.getLogger(__name__)
+    conda_exe = shutil.which('mamba') or shutil.which('conda') or shutil.which('micromamba')
+    if not conda_exe:
+        logger.error("Could not find 'mamba', 'conda', or 'micromamba' in PATH.")
+        logger.error("Please ensure Conda or Mamba is installed and available in your terminal PATH.")
+        return 1
+
+    env_name = getattr(args, 'env_name', 'mob_suite')
+    conda_name = Path(conda_exe).name
+    logger.info(f"Creating dedicated Conda environment '{env_name}' for MOB-suite using {conda_name}...")
+    cmd = [conda_exe, 'create', '-y', '-n', env_name, '-c', 'conda-forge', '-c', 'bioconda', 'mob_suite']
+    try:
+        subprocess.check_call(cmd)
+        logger.info(f"✅ Successfully created '{env_name}' environment!")
+        logger.info("Accio will now automatically run MOB-suite tools inside this environment.")
+        return 0
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to create Conda environment: {e}")
+        return 1 
 
 
 def handle_find_command(args: argparse.Namespace) -> int:
@@ -632,6 +698,10 @@ def handle_find_command(args: argparse.Namespace) -> int:
             config.CIRCULAR_ONLY = True
             
         config.FIND_NOVEL_PLASMIDS = not getattr(args, 'skip_novel_plasmids', False)
+        if getattr(args, 'mob_env', None):
+            config.MOB_CONDA_ENV = args.mob_env
+        if getattr(args, 'mob_bin_dir', None):
+            config.MOB_BIN_DIR = args.mob_bin_dir
 
         validate_config(config)
         
@@ -722,10 +792,18 @@ def handle_create_command(args: argparse.Namespace) -> int:
         
         # Initialize database builder
         logger.info("🏗️  Starting database creation...")
+        create_config = AnalysisConfig()
+        create_config.THREADS = args.threads
+        if getattr(args, 'mob_env', None):
+            create_config.MOB_CONDA_ENV = args.mob_env
+        if getattr(args, 'mob_bin_dir', None):
+            create_config.MOB_BIN_DIR = args.mob_bin_dir
+
         builder = DatabaseBuilder(
             threads=args.threads,
             min_length=args.min_length,
-            max_length=args.max_length
+            max_length=args.max_length,
+            config=create_config
         )
         
         # Collect input files
@@ -830,7 +908,8 @@ def handle_check_command(args: argparse.Namespace) -> int:
                 info = tool_availability.get(tool)
                 if info:
                     status = "✅" if info['available'] else "❌"
-                    print(f"    {status} {tool}")
+                    note = f" ({info['note']})" if info.get('note') else ""
+                    print(f"    {status} {tool}{note}")
                     if not info['available']:
                         print(f"       └─ Install with: {info['install_hint']}")
                         all_available = False
@@ -1185,6 +1264,8 @@ def main() -> int:
             return handle_query_command(args)
         elif args.command == 'multi':
             return handle_multi_command(args)
+        elif args.command == 'setup-mob':
+            return handle_setup_mob_command(args)
         else:
             logger.error(f"Unknown command: {args.command}")
             return 1

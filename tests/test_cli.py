@@ -251,3 +251,23 @@ def test_multi_thread_division(monkeypatch, tmp_path):
     for job in captured_jobs:
         assert job.threads == 8
 
+
+def test_cli_setup_mob_parser():
+    """Test setup-mob parser arguments."""
+    parser = create_main_parser()
+    args = parser.parse_args(['setup-mob', '--env-name', 'custom_mob'])
+    assert args.command == 'setup-mob'
+    assert args.env_name == 'custom_mob'
+
+
+def test_cli_find_and_create_mob_env_args():
+    """Test --mob_env and --mob-bin-dir in find and create parsers."""
+    parser = create_main_parser()
+    args_find = parser.parse_args(['find', 'asm.fasta', '-d', 'db', '-o', 'out', '--mob_env', 'test_env', '--mob_bin_dir', '/path/to/bins'])
+    assert args_find.mob_env == 'test_env'
+    assert args_find.mob_bin_dir == '/path/to/bins'
+
+    args_create = parser.parse_args(['create', 'p1.fasta', '-o', 'out_db', '--mob-env', 'create_env', '--mob-bin-dir', '/other/bins'])
+    assert args_create.mob_env == 'create_env'
+    assert args_create.mob_bin_dir == '/other/bins'
+
