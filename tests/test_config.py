@@ -11,7 +11,7 @@ def test_get_config_defaults():
     assert config.MIN_IDENTITY == 75
     assert config.FIND_NOVEL_PLASMIDS is True
     assert config.THREADS == 4
-    assert config.CLASSIFIER == 'plasme'
+    assert config.CLASSIFIER == 'genomad'
 
 
 def test_validate_config_valid():

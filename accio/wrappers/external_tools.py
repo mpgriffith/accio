@@ -47,29 +47,29 @@ class BLASTRunner:
         Raises:
             ExternalToolError: If BLAST execution fails
         """
-        # Prepare output format
+        # Build command list safely for paths with spaces
+        cmd = ['blastn', '-query', str(query), '-db', str(database), '-num_threads', str(self.config.THREADS)]
+        if output_file:
+            cmd.extend(['-out', str(output_file)])
+            
         if additional_args and '-outfmt' in additional_args:
-            output_fmt = ''
             fields = []
         else:
-            output_fmt = f"-outfmt {DEFAULT_OUTFMT}"
+            cmd.extend(['-outfmt', DEFAULT_OUTFMT.strip('"').strip("'")])
             fields = DEFAULT_FIELDS + EXTRA_FIELDS
             
-        # Prepare output redirection
-        output_redirect = f'-out {output_file}' if output_file else ''
-        
-        # Build command
-        cmd = f'blastn -query {query} -db {database} {output_redirect} {output_fmt} {additional_args}'
+        if additional_args:
+            cmd.extend(shlex.split(additional_args))
         
         try:
             if not output_file:
                 # Capture output directly
-                result = subprocess.check_output(shlex.split(cmd), stderr=subprocess.PIPE)
+                result = subprocess.check_output(cmd, stderr=subprocess.PIPE)
                 result_io = io.StringIO(result.decode())
                 df = pd.read_csv(result_io, sep='\t', names=fields, dtype={'qseqid': str}, header=None)
             else:
                 # Run with file output
-                subprocess.check_call(shlex.split(cmd))
+                subprocess.check_call(cmd)
                 df = pd.read_csv(output_file, sep='\t', names=fields, dtype={'qseqid': str}, header=None)
                 
             if sample_name:
@@ -160,7 +160,7 @@ class MashRunner:
         Raises:
             ExternalToolError: If Mash execution fails
         """
-        cmd = ['mash', 'screen', database, query]
+        cmd = ['mash', 'screen', '-p', str(self.config.THREADS), str(database), str(query)]
         
         try:
             result = subprocess.run(cmd, capture_output=True, check=True)
@@ -203,31 +203,35 @@ class NucmerRunner:
         """
         try:
             # Run nucmer
-            nucmer_cmd = (
-                f'nucmer --diagdiff {self.config.NUCMER_DIAGDIFF} '
-                f'--breaklen {self.config.NUCMER_BREAKLEN} '
-                f'--maxmatch -p {prefix} {reference} {query}'
-            )
-            subprocess.check_call(shlex.split(nucmer_cmd))
+            nucmer_cmd = [
+                'nucmer',
+                '--diagdiff', str(self.config.NUCMER_DIAGDIFF),
+                '--breaklen', str(self.config.NUCMER_BREAKLEN),
+                '--maxmatch',
+                '-p', str(prefix),
+                str(reference),
+                str(query)
+            ]
+            subprocess.check_call(nucmer_cmd)
             delta_file = f'{prefix}.delta'
             
             # Filter delta file
             filtered_delta_file = f'{prefix}.1delta'
-            delta_filter_cmd = f'delta-filter -qr {delta_file}'
+            delta_filter_cmd = ['delta-filter', '-qr', delta_file]
             with open(filtered_delta_file, 'w') as outfile:
-                subprocess.check_call(shlex.split(delta_filter_cmd), stdout=outfile)
+                subprocess.check_call(delta_filter_cmd, stdout=outfile)
                 
             # Extract coordinates
             coords_file = f'{prefix}.coords'
-            coords_cmd = f'show-coords -TrcldH -I 80 {delta_file}'
+            coords_cmd = ['show-coords', '-TrcldH', '-I', '80', delta_file]
             with open(coords_file, 'w') as outfile:
-                subprocess.check_call(shlex.split(coords_cmd), stdout=outfile)
+                subprocess.check_call(coords_cmd, stdout=outfile)
                 
             # Extract SNPs
             snps_file = f'{prefix}.snps'
-            snps_cmd = f'show-snps -TrH {delta_file}'
+            snps_cmd = ['show-snps', '-TrH', delta_file]
             with open(snps_file, 'w') as outfile:
-                subprocess.check_call(shlex.split(snps_cmd), stdout=outfile)
+                subprocess.check_call(snps_cmd, stdout=outfile)
                 
             # Read results
             coords_df = pd.read_csv(
@@ -335,8 +339,9 @@ class ReadMappingRunner:
                 map_cmd = ['bwa', 'mem', '-t', str(self.config.THREADS), reference] + reads
             else:
                 # Map with minimap2
+                preset = getattr(self.config, 'MAPPING_PRESET', None) or 'map-ont'
                 map_cmd = [
-                    'minimap2', '-a', '-P', '-x', 'map-ont', 
+                    'minimap2', '-a', '-P', '-x', preset, 
                     '-t', str(self.config.THREADS), reference
                 ] + reads
                 
@@ -349,7 +354,10 @@ class ReadMappingRunner:
             
             map_proc.stdout.close()
             sort_proc.wait()
+            map_proc.wait()
             
+            if map_proc.returncode != 0:
+                raise subprocess.CalledProcessError(map_proc.returncode, map_cmd[0])
             if sort_proc.returncode != 0:
                 raise subprocess.CalledProcessError(sort_proc.returncode, 'samtools sort')
                 
@@ -530,14 +538,14 @@ class SkaniRunner:
     
     def run_ska_dist(self, plasmids, output_file):
         cmd = [
-            'skani', 'dist', '--ri', plasmids, '--qi', plasmids,
-            '--medium', '-m', '200', '-o', str(output_file)
+            'skani', 'dist', '--ri', str(plasmids), '--qi', str(plasmids),
+            '--medium', '-m', '200', '-t', str(self.config.THREADS), '-o', str(output_file)
         ]
         
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
-            raise ExternalToolError(f"MOB-typer failed: {str(e)}")
+            raise ExternalToolError(f"skani dist failed: {str(e)}")
                 
 class AMRRunner:
     """Wrapper for AMRFinder operations."""

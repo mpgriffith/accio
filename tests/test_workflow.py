@@ -194,3 +194,137 @@ def test_genomad_splits_passed_to_cmd(base_config):
         assert cmd[splits_idx + 1] == '8'
 
 
+def test_clean_up_files_handles_nested_directories_and_preserves_novel_fasta(base_config, tmp_path):
+    """Test that _clean_up_files removes nested directories without error and keeps novel_plasmid_contigs.fasta."""
+    wf = PlasmidAnalysisWorkflow(base_config)
+
+    # Create nested directory like genomad output
+    nested_dir = tmp_path / "genomad" / "sample1_summary"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "sample1_plasmid_summary.tsv").write_text("seq_name\tplasmid_score\n")
+
+    # Create novel plasmid fasta
+    novel_fasta = tmp_path / "sample1_novel_plasmid_contigs.fasta"
+    novel_fasta.write_text(">c_novel\nATGC\n")
+
+    contig = Contig("c_novel", SeqRecord(Seq("ATGC" * 100), id="c_novel"), circular=True)
+    assignment_results = {'plasmids_assigned': [], 'contigs_assigned': {}}
+    novel_results = {
+        'contigs': [contig],
+        'mob_results': pd.DataFrame(),
+        'contig_results': pd.DataFrame([{'contig_id': 'c_novel', 'molecule_type': 'chromosome'}])
+    }
+
+    output_files = wf._generate_outputs(
+        assignment_results, novel_results, {"c_novel": contig},
+        str(tmp_path), "sample1"
+    )
+    assert 'novel_plasmids_fasta' in output_files
+
+    wf._clean_up_files(str(tmp_path), list(output_files.values()))
+    assert not (tmp_path / "genomad").exists()
+    assert novel_fasta.exists()
+
+
+def test_load_contigs_circular_only(base_config, tmp_path):
+    """Test that CIRCULAR_ONLY filters out linear contigs during _load_contigs."""
+    base_config.CIRCULAR_ONLY = True
+    wf = PlasmidAnalysisWorkflow(base_config)
+
+    fasta_file = tmp_path / "asm.fasta"
+    fasta_file.write_text(">c_circ circular=true\nATGC\n>c_lin\nATGC\n")
+
+    contigs = wf._load_contigs(str(fasta_file))
+    assert "c_circ" in contigs
+    assert "c_lin" not in contigs
+
+
+def test_generate_outputs_partial_mob_and_per_plasmid_fasta(base_config, tmp_path):
+    """Test _generate_outputs when mob_results is missing a cluster ID and verify per-plasmid FASTA creation."""
+    from accio.core.plasmid import Plasmid
+    wf = PlasmidAnalysisWorkflow(base_config)
+
+    c_assigned = Contig("c_assigned", SeqRecord(Seq("ATGC" * 100), id="c_assigned"))
+    c_novel = Contig("c_novel", SeqRecord(Seq("GGCC" * 100), id="c_novel"), circular=True)
+    c_novel.add_rep_type(pd.DataFrame([{'sseqid': 'IncFIB_1'}]))
+    c_novel.add_amr_genes(['blaTEM-1'])
+
+    p_assigned = Plasmid("pRef1", "cl1", "subcomm_1", 400, "db.msh")
+    p_assigned.contigs = {"c_assigned": c_assigned}
+
+    assignment_results = {'plasmids_assigned': [p_assigned], 'contigs_assigned': {'c_assigned': 'pRef1'}}
+    # mob_contigs has cluster 'novel_cl_1', while mob_results has a different cluster (testing fallback without IndexError)
+    mob_results = pd.DataFrame([{'primary_cluster_id': 'other_cluster', 'size': 400}])
+    mob_contigs = pd.DataFrame([{'contig_id': 'c_novel', 'molecule_type': 'plasmid', 'primary_cluster_id': 'novel_cl_1', 'size': 400}])
+    novel_results = {'contigs': [c_novel], 'mob_results': mob_results, 'contig_results': mob_contigs}
+
+    output_files = wf._generate_outputs(
+        assignment_results, novel_results,
+        {"c_assigned": c_assigned, "c_novel": c_novel},
+        str(tmp_path), "sampleX"
+    )
+
+    assert 'plasmids' in output_files
+    assert (tmp_path / "sampleX_plasmid_subcomm_1_contigs.fasta").exists()
+    assert (tmp_path / "sampleX_plasmid_novel_cl_1_contigs.fasta").exists()
+
+
+def test_process_plasmids_replicon_filtering(base_config):
+    """Test that _process_plasmids filters out plasmids whose rep_type is not found in the sample."""
+    from accio.core.plasmid import Plasmid
+    wf = PlasmidAnalysisWorkflow(base_config)
+
+    c1 = Contig("c1", SeqRecord(Seq("ATGC" * 100), id="c1"))
+    c1.add_rep_type(pd.DataFrame([{'sseqid': 'IncFII_1'}]))
+
+    p_match = Plasmid("p_match", "c1", "pt1", 1000, "db.msh", rep_type="IncFII")
+    p_untyped = Plasmid("p_untyped", "c2", "pt2", 1000, "db.msh", rep_type=None)
+    p_mismatch = Plasmid("p_mismatch", "c3", "pt3", 1000, "db.msh", rep_type="IncX3")
+
+    plasmids = {"p_match": p_match, "p_untyped": p_untyped, "p_mismatch": p_mismatch}
+    blast_results = {
+        'blast': pd.DataFrame([{'qseqid': 'c1', 'sseqid': 'p_match'}]),
+        'mash': pd.DataFrame(columns=['sseqid', 'pident', 'shared-hashes', 'median-mult', 'pvalue'])
+    }
+
+    matches = wf._process_plasmids({"c1": c1}, plasmids, blast_results, coverage_results=None)
+    assert "p_match" in plasmids
+    assert "p_untyped" in plasmids
+    assert "p_mismatch" not in plasmids
+    assert matches == ["p_match"]
+
+
+def test_get_median_coverage_and_load_plasmids(base_config, tmp_path):
+    """Test _get_median_coverage length-weighted calculation and _load_plasmids from CSV."""
+    wf = PlasmidAnalysisWorkflow(base_config)
+
+    assert wf._get_median_coverage(pd.DataFrame()) == 30.0
+
+    cov_df = pd.DataFrame([
+        {'contig': 'c1', 'length': 100000, 'meandepth': 45.0},
+        {'contig': 'c2', 'length': 20000, 'meandepth': 120.0},
+        {'contig': 'c3', 'length': 10000, 'meandepth': 90.0},
+    ])
+    # c1 has >50% of total length (100k / 130k), so weighted median is 45.0
+    assert wf._get_median_coverage(cov_df) == 45.0
+
+    # Test _load_plasmids
+    info_df = pd.DataFrame([{
+        'sample_id': 'plasmid_1',
+        'pling_type': 'subcomm_A',
+        'primary_cluster_id': 'AA100',
+        'size': 55000,
+        'rep_type': 'IncFIA',
+        'amr_genes': 'blaKPC-2',
+        'subcommunity_amr_genes': 'blaKPC-2,tet(A)'
+    }])
+    info_df.to_csv(tmp_path / "plasmidDB_info.csv", index=False)
+
+    plasmids = wf._load_plasmids(str(tmp_path))
+    assert "plasmid_1" in plasmids
+    assert plasmids["plasmid_1"].rep_type == "IncFIA"
+    assert plasmids["plasmid_1"].length == 55000
+
+
+
+

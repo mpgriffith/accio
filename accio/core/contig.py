@@ -110,7 +110,10 @@ class Contig:
         if not df.empty:
             self.type = 'plasmid'
             self.plas_data = [(None, None)]
-            self.rep_types = list(df['sseqid'].unique())
+            self.rep_types = list(dict.fromkeys(
+                str(s).split('_')[0].split('(')[0].split('-')[0]
+                for s in df['sseqid'].unique()
+            ))
 
     def add_plasme_data(self, plasme_df: pd.DataFrame, threshold: float) -> None:
         """
@@ -200,14 +203,16 @@ class Contig:
             rep_elem_cov = [0] * (int(df_group.iloc[0]['slen']) + 1)
             
             for idx, r in df_group.iterrows():
+                sstart, send = sorted([int(r['sstart']), int(r['send'])])
                 # Mark covered positions in repeat element
-                for i in range(int(r['sstart']), int(r['send'])):
-                    if i - 1 < len(rep_elem_cov):
+                for i in range(sstart, send + 1):
+                    if 0 <= i - 1 < len(rep_elem_cov):
                         rep_elem_cov[i - 1] = 1
                         
+                qstart, qend = sorted([int(r['qstart']), int(r['qend'])])
                 # Mark covered positions in contig
-                for i in range(int(r['qstart']), int(r['qend'])):
-                    if i - 1 < len(contig_cov):
+                for i in range(qstart, qend + 1):
+                    if 0 <= i - 1 < len(contig_cov):
                         contig_cov[i - 1] = 1
                         
             coverage_pct = sum(rep_elem_cov) / len(rep_elem_cov) * 100
@@ -283,7 +288,7 @@ class Contig:
             cluster_id: Cluster ID of the assigned plasmid
         """
         self.assigned = 'plasmid'
-        if self.plas_data[0] is not None and self.contig_type == 'repetitive':
+        if self.plas_data and self.plas_data[0] is not None and self.plas_data[0][0] is not None and self.contig_type == 'repetitive':
             self.plas_data = self.plas_data + [(plasmid_id, cluster_id)]
         else:
             self.plas_data = [(plasmid_id, cluster_id)]
@@ -328,8 +333,8 @@ class Contig:
             'contig_type': self.contig_type,
             'type': self.type,
             'assigned': self.assigned,
-            'assigned plasmid(s)': [p[0] for p in self.plas_data] if len(self.plas_data) > 0 else None,
-            'assigned cluster(s)': [p[1] for p in self.plas_data] if len(self.plas_data) > 0 else None,
+            'assigned plasmid(s)': [p[0] for p in self.plas_data if p and p[0] is not None] if any(p and p[0] is not None for p in self.plas_data) else None,
+            'assigned cluster(s)': [p[1] for p in self.plas_data if p and p[1] is not None] if any(p and p[1] is not None for p in self.plas_data) else None,
             'copy_num': self.copy_num,
             'rep_types': self.rep_types,
             'num_blast_hits': len(self.blast_data) if not self.blast_data.empty else 0,
@@ -340,5 +345,6 @@ class Contig:
 
     def __repr__(self) -> str:
         """String representation of the contig."""
-        status = f"assigned to {', '.join(self.plas_data[i][0] for i in range(len(self.plas_data)))}" if self.assigned else "unassigned"
+        assigned_ids = [str(p[0]) for p in self.plas_data if p and p[0] is not None]
+        status = f"assigned to {', '.join(assigned_ids)}" if self.assigned and assigned_ids else "unassigned"
         return f"Contig({self.id}, {self.length}bp, {status})"

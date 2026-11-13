@@ -217,11 +217,12 @@ def _has_cluster_conflict(plasmid: Plasmid,
     """Check if plasmid conflicts with already assigned clusters."""
     
     # Check pling type conflict
-    if plasmid.other.get('pling_type') in clusters_assigned['pling_type']:
+    pling_type = plasmid.other.get('pling_type')
+    if pling_type and pling_type not in ('novel', 'unknown') and pling_type in clusters_assigned['pling_type']:
         return True
         
     # Check MOB cluster conflict  
-    if plasmid.cluster_id in clusters_assigned['mob_cluster']:
+    if plasmid.cluster_id and plasmid.cluster_id not in ('novel', 'unknown') and plasmid.cluster_id in clusters_assigned['mob_cluster']:
         return True
         
     # Check replicon type conflict

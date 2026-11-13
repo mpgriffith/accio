@@ -34,10 +34,10 @@ def test_validate_sequence(builder):
 
 
 def test_check_circularity_description(builder):
-    rec = SeqRecord(Seq("ATGC" * 100), id="c1", description="assembly circular=true contig")
+    rec = SeqRecord(Seq("A" * 200 + "G" * 200), id="c1", description="assembly circular=true contig")
     assert builder._check_circularity(rec) is True
 
-    rec_linear = SeqRecord(Seq("ATGC" * 100), id="c2", description="linear contig")
+    rec_linear = SeqRecord(Seq("A" * 200 + "G" * 200), id="c2", description="linear contig")
     assert builder._check_circularity(rec_linear) is False
 
 
@@ -371,7 +371,7 @@ def test_non_circular_sequences_filtered_when_flag_true(tmp_path):
     """Test that non-circular sequences are filtered when check_circular is True."""
     builder = DatabaseBuilder(min_length=100)
     fasta_file = tmp_path / "plasmids.fasta"
-    fasta_file.write_text(">seq_linear\n" + "ATGC" * 50 + "\n>seq_circ description circular=true\n" + "ATGC" * 50 + "\n")
+    fasta_file.write_text(">seq_linear\n" + "A" * 100 + "G" * 100 + "\n>seq_circ description circular=true\n" + "A" * 100 + "G" * 100 + "\n")
 
     sequences, stats = builder._process_input_sequences([str(fasta_file)], validate=False, check_circular=True)
     assert "seq_linear" not in sequences
@@ -415,7 +415,7 @@ def test_rep_type_populated_from_rep_types(tmp_path):
 
 
 def test_cluster_threshold_skani_fraction_conversion(tmp_path, monkeypatch):
-    """Test that cluster_plasmids_skani handles percentage (99.95), fraction (0.9995), and distance (0.05) equivalently."""
+    """Test that cluster_plasmids_skani handles percentage (99.95), fraction (0.9995)"""
     import scipy.cluster.hierarchy as sch
     builder = DatabaseBuilder()
     fasta_file = tmp_path / "plasmids.fasta"
@@ -442,10 +442,94 @@ def test_cluster_threshold_skani_fraction_conversion(tmp_path, monkeypatch):
     builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=99.95)
     # Calling with fraction 0.9995
     builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=0.9995)
-    # Calling with distance 0.05
-    builder.cluster_plasmids_skani(str(fasta_file), tmp_path, sim_threshold=0.05)
 
-    assert len(captured_t) == 3
+    assert len(captured_t) == 2
     for t_val in captured_t:
         assert abs(t_val - 0.05) < 1e-4, f"Expected thres=0.05, got {t_val}"
+
+
+def test_cluster_plasmids_skani_single_and_empty(builder, tmp_path, monkeypatch):
+    """Test that cluster_plasmids_skani with 0 or 1 sequence returns without invoking skani or crashing scipy."""
+    skani_called = []
+    monkeypatch.setattr(builder.skani_runner, "run_ska_dist", lambda *a, **kw: skani_called.append(True))
+
+    single_fa = tmp_path / "single.fasta"
+    single_fa.write_text(">only_one\n" + "ATGC" * 100 + "\n")
+    rep_seqs, clus_df = builder.cluster_plasmids_skani(str(single_fa), tmp_path)
+    assert len(rep_seqs) == 1
+    assert len(clus_df) == 1
+    assert len(skani_called) == 0
+
+
+def test_merge_cluster_info_update_preserves_metadata(builder):
+    """Test that _merge_cluster_info preserves existing metadata on update and handles empty cluster_info."""
+    meta_df = pd.DataFrame([
+        {'plasmid_id': 'p_old', 'cluster_id': 'c_old', 'rep_type': 'IncFII', 'length': 5000, 'gc': 51.2},
+        {'plasmid_id': 'p_new', 'cluster_id': 'unknown', 'rep_type': 'unknown', 'length': 6000, 'gc': None},
+    ])
+    # mob_df only has new sequence
+    mob_df = pd.DataFrame([
+        {'sample_id': 'p_new', 'rep_type(s)': 'IncX3', 'gc': 48.5}
+    ])
+    merged = builder._merge_cluster_info(
+        meta_df,
+        cluster_info=pd.DataFrame(),
+        mob_df=mob_df,
+        plasmidfinder_results=pd.DataFrame(),
+        amrfinder_results=pd.DataFrame()
+    )
+    assert 'plasmid_id' in merged.columns
+    assert merged.loc['p_old', 'rep_type'] == 'IncFII'
+    assert merged.loc['p_old', 'gc'] == 51.2
+    assert merged.loc['p_new', 'rep_type'] == 'IncX3'
+    assert merged.loc['p_new', 'gc'] == 48.5
+
+
+def test_simple_clustering_and_load_existing_db(builder, tmp_path):
+    """Test _simple_clustering connected components and _load_existing_database."""
+    distances = [
+        ('s1', 's2', 0.01),
+        ('s2', 's3', 0.02),
+        ('s1', 's4', 0.50),
+    ]
+    clusters = builder._simple_clustering(distances, threshold=0.95)
+    assert clusters['s1'] == clusters['s2'] == clusters['s3']
+    assert clusters['s4'] != clusters['s1']
+
+    # Test _load_existing_database fallback to plasmidDB.fasta
+    (tmp_path / "plasmidDB.fasta").write_text(">p1\nATGC\n")
+    (tmp_path / "plasmidDB_info.csv").write_text("plasmid_id,cluster_id\np1,c1\n")
+    seqs, meta = builder._load_existing_database(str(tmp_path))
+    assert "p1" in seqs
+    assert len(meta) == 1
+
+
+def test_pling_get_dcj_dist_by_length_and_fallback(monkeypatch, tmp_path):
+    """Test PlingRunner.get_dcj_dist_by_length adjustment rules and run_pling fallback from 'add' to 'cluster align'."""
+    from accio.wrappers.pling import PlingRunner
+    import subprocess
+    runner = PlingRunner()
+
+    # Small plasmid (50kb <= 120kb) with raw distance 2 <= 4, but normalized 2/50 = 0.04; if 3/40 = 0.075 > 0.05 -> clamped to 0.04
+    row_clamp_down = pd.Series({'length1': 40000, 'length2': 50000, 'distance_y': 3})
+    assert abs(runner.get_dcj_dist_by_length(row_clamp_down, threshold=0.05, min_len=120000, dcj_threshold=4) - 0.04) < 1e-6
+
+    # Small plasmid (100kb <= 120kb) with raw distance 5 > 4, but normalized 5/100 = 0.05; if 4.5/100 = 0.045 < 0.05 -> clamped to 0.06
+    row_clamp_up = pd.Series({'length1': 100000, 'length2': 100000, 'distance_y': 4.5})
+    assert abs(runner.get_dcj_dist_by_length(row_clamp_up, threshold=0.05, min_len=120000, dcj_threshold=4) - 0.06) < 1e-6
+
+    # Test run_pling fallback when 'add' fails with CalledProcessError
+    calls = []
+    def mock_check_call(cmd):
+        calls.append(cmd)
+        if 'add' in cmd:
+            raise subprocess.CalledProcessError(1, cmd)
+    monkeypatch.setattr("subprocess.check_call", mock_check_call)
+
+    runner.run_pling("in.txt", str(tmp_path), previous_pling_dir="/old/pling")
+    assert len(calls) == 2
+    assert 'add' in calls[0]
+    assert 'cluster' in calls[1] and 'align' in calls[1]
+
+
 

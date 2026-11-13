@@ -121,6 +121,8 @@ class AnalysisConfig:
     DCJ_THRESHOLD_NUM = 4
     
     OVERWRITE_FILES = False
+    CIRCULAR_ONLY = False
+    plasmid_db = None
 
 
 # File naming patterns

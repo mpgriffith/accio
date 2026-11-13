@@ -12,7 +12,10 @@ import logging
 from typing import Optional, Dict, List, Any, Union, Tuple
 from intervaltree import IntervalTree
 from Bio import SeqIO
-import pysam
+try:
+    import pysam
+except ImportError:
+    pysam = None
 
 from ..config import AnalysisConfig, DEFAULT_FIELDS, EXTRA_FIELDS
 from .contig import Contig
@@ -43,7 +46,9 @@ class Plasmid:
         self.rep_type = rep_type
         self.amr_genes = amr_genes
         self.group_amr_genes = group_amr_genes
-        self.other = other or {}
+        self.other = dict(other) if other else {}
+        if pling_type and 'pling_type' not in self.other:
+            self.other['pling_type'] = pling_type
         
         # Scoring attributes
         self.score = -1.0
@@ -69,20 +74,24 @@ class Plasmid:
         self.synteny_score_type = 'blocks'
         
         # Read coverage data
-        self.read_cov_data: Optional[pysam.AlignmentFile] = None
+        self.read_cov_data: Optional[Any] = None
         self.median_read_depth = 30
+        self.config: Optional[AnalysisConfig] = None
 
     def add_rep_type(self, rep_type: str) -> None:
         """Add replicon type information."""
         self.rep_type = rep_type
 
-    def add_contigs(self, contigs: Union[Contig, List[Contig]]) -> None:
+    def add_contigs(self, contigs: Union[Contig, List[Contig]], config: Optional[AnalysisConfig] = None) -> None:
         """
         Add contigs to this plasmid and update analysis data.
         
         Args:
             contigs: Single contig or list of contigs to add
+            config: Optional AnalysisConfig to preserve scoring configuration
         """
+        if config is not None:
+            self.config = config
         if not isinstance(contigs, list):
             contigs = [contigs]
             
@@ -116,15 +125,18 @@ class Plasmid:
             
         # Recalculate scores
         self.calc_blast_score()
-        self.calc_scores()
+        self.calc_scores(config=self.config)
 
-    def remove_contigs(self, contig_ids: Union[str, List[str]]) -> None:
+    def remove_contigs(self, contig_ids: Union[str, List[str]], config: Optional[AnalysisConfig] = None) -> None:
         """
         Remove contigs from this plasmid and update scores.
         
         Args:
             contig_ids: Single contig ID or list of contig IDs to remove
+            config: Optional AnalysisConfig to preserve scoring configuration
         """
+        if config is not None:
+            self.config = config
         if isinstance(contig_ids, str):
             contig_ids = [contig_ids]
             
@@ -142,7 +154,7 @@ class Plasmid:
         
         # Recalculate scores
         self.calc_blast_score()
-        self.calc_scores()
+        self.calc_scores(config=self.config)
 
     def add_mash_data(self, mash_data: pd.DataFrame) -> None:
         """
@@ -168,7 +180,7 @@ class Plasmid:
             self.scores['mash_score_median_mult'] = int(row['median-mult'])
             self.scores['mash_score_pvalue'] = float(row['pvalue'])
 
-    def add_read_data(self, mash_data: pd.DataFrame, cov_data: Optional[pysam.AlignmentFile], 
+    def add_read_data(self, mash_data: pd.DataFrame, cov_data: Optional[Any], 
                      median_depth: Optional[float] = None) -> None:
         """
         Add read-based analysis data.
@@ -316,23 +328,26 @@ class Plasmid:
             ]
             
             if not nucmer_dfs:
-                self.scores.update({'synteny_' + k: v for k, v in data.items()})
+                self._calc_length_score(self.blast_data, data)
+                self.scores.update({'synteny_' + k: v for k, v in data.items() if k != 'length_score'})
                 self.scores['synteny_score'] = 0
                 return
                 
             df = pd.concat(nucmer_dfs)
             
         except Exception:
-            self.scores.update({'synteny_' + k: v for k, v in data.items()})
+            self._calc_length_score(self.blast_data, data)
+            self.scores.update({'synteny_' + k: v for k, v in data.items() if k != 'length_score'})
             self.scores['synteny_score'] = 0
             return
             
         if synteny_type == 'nucmer':
             self._calc_nucmer_synteny(df, data)
+            self._calc_length_score(df, data)
         elif synteny_type == 'blocks':
             self._calc_block_synteny(df, data)
             
-        self.scores.update({'synteny_' + k: v for k, v in data.items()})
+        self.scores.update({'synteny_' + k: v for k, v in data.items() if k != 'length_score'})
 
     def _calc_nucmer_synteny(self, df: pd.DataFrame, data: Dict[str, Any]) -> None:
         """Calculate synteny score using nucmer-style binning approach."""
@@ -473,8 +488,19 @@ class Plasmid:
 
     def _calc_length_score(self, df: pd.DataFrame, data: Dict[str, Any]) -> None:
         """Calculate length-based similarity score."""
-        if df.empty:
-            data['length_score'] = 0
+        if df.empty or 'qseqid' not in df.columns:
+            if len(self.contigs) == 1 and not self.blast_data.empty:
+                contig_sum = sum(c.length for c in self.contigs.values())
+                data['length_score'] = (
+                    1 - abs(contig_sum - self.length) / max(contig_sum, self.length)
+                    if max(contig_sum, self.length) > 0 else 0
+                )
+                self.scores['length_score'] = data['length_score']
+                self.other['length_contigs'] = contig_sum
+            else:
+                data['length_score'] = 0
+                self.scores['length_score'] = 0
+                self.other['length_contigs'] = 0
             return
             
         contig_sum = 0
@@ -581,7 +607,7 @@ class Plasmid:
             self.scores['mash_score_pvalue'] = float(score_row['pvalue'])
             return float(score_row.pident)
             
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             return 0.0
         finally:
             if os.path.exists(temp_filename):
@@ -657,7 +683,9 @@ class Plasmid:
             config: Analysis configuration
         """
         if config is None:
-            config = AnalysisConfig()
+            config = self.config or AnalysisConfig()
+        else:
+            self.config = config
             
         self.use_minimap = getattr(config, 'USE_MINIMAP', False)
         self.mapping_preset = getattr(config, 'MAPPING_PRESET', None)

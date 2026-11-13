@@ -7,7 +7,8 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
+import numpy as np
 import scipy.cluster.hierarchy as sch
 
 import pandas as pd
@@ -318,16 +319,23 @@ class DatabaseBuilder:
             SeqIO.write(sequences.values(), temp_fasta, 'fasta')
             all_seqs_file = temp_fasta.name
 
-        # Run Mob Typer on all sequences
-        mob_df, mob_typer_file = self._run_mob_typer(all_seqs_file, output_path)
-        
-        # Run PlasmidFinder on all sequences
-        plasmidfinder_results, _ = self._run_plasmidfinder(all_seqs_file, str(output_path))
-        amrfinder_results = self._run_amrfinder(all_seqs_file, output_path)
+        try:
+            # Run Mob Typer on all sequences
+            mob_df, mob_typer_file = self._run_mob_typer(all_seqs_file, output_path)
+            
+            # Run PlasmidFinder on all sequences
+            plasmidfinder_results, _ = self._run_plasmidfinder(all_seqs_file, str(output_path))
+            amrfinder_results = self._run_amrfinder(all_seqs_file, output_path)
 
-        # Filter for sequences that are likely plasmids
-        plasmids = self._filter_plasmids(sequences, mob_df, plasmidfinder_results, use_all)
-        return plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results
+            # Filter for sequences that are likely plasmids
+            plasmids = self._filter_plasmids(sequences, mob_df, plasmidfinder_results, use_all)
+            return plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results
+        finally:
+            if os.path.exists(all_seqs_file):
+                try:
+                    os.remove(all_seqs_file)
+                except OSError:
+                    pass
     
     def _run_plasmidfinder(self, sequence_file: str, output_dir: str) -> pd.DataFrame:
         """Run PlasmidFinder on sequences."""
@@ -642,7 +650,7 @@ class DatabaseBuilder:
         # Load sequences
         clus_seqs = list(SeqIO.parse(plasmid_file, 'fasta'))
         
-        if skip_cluster == True:
+        if skip_cluster == True or len(clus_seqs) <= 1:
             self.logger.info(f"Skip clustering plasmids - keeping all {len(clus_seqs)} sequences as representatives")
 
             clus_data = pd.DataFrame({
@@ -679,7 +687,7 @@ class DatabaseBuilder:
         all_ids = sorted(set(list(skani_df['ref']) + list(skani_df['query'])))
         skani_dm = skani_df[skani_df['minAF'] >= cov_threshold].pivot(
             index='query', columns='ref', values='combined_dist'
-        ).fillna(100)
+        )
         
         skani_dm = skani_dm.reindex(index=all_ids, columns=all_ids)
         
@@ -696,6 +704,10 @@ class DatabaseBuilder:
                     max_dist = max(d1, d2)
                     skani_dm.at[i1, i2] = max_dist
                     skani_dm.at[i2, i1] = max_dist
+                elif not pd.isna(d1):
+                    skani_dm.at[i2, i1] = d1
+                elif not pd.isna(d2):
+                    skani_dm.at[i1, i2] = d2
                     
         skani_dm = skani_dm.fillna(100)
         
@@ -809,22 +821,34 @@ class DatabaseBuilder:
                            plasmidfinder_results: pd.DataFrame,
                            amrfinder_results: pd.DataFrame) -> pd.DataFrame:
         """Merge clustering information with metadata."""
-        print(metadata_df.head())
-        metadata_df = metadata_df.set_index('plasmid_id')
+        if 'plasmid_id' in metadata_df.columns:
+            metadata_df = metadata_df.set_index('plasmid_id')
 
         if not cluster_info.empty:
             cluster_info = cluster_info.set_index('Plasmid')
-            metadata_df['primary_cluster_id'] = metadata_df.index.map(lambda s: cluster_info.loc[s, 'cluster'])
-            # metadata_df['representative'] = metadata_df.index.map(lambda s: ['Representative']
-            # metadata_df = metadata_df.loc[cluster_info['Representative'].unique()]
-            metadata_df['plasmid_id'] = metadata_df.index
+            metadata_df['primary_cluster_id'] = metadata_df.index.map(
+                lambda s: cluster_info.loc[s, 'cluster'] if s in cluster_info.index else None
+            )
 
-        mob_df['plasmid_id'] = mob_df['sample_id'].map(lambda s: s.split()[0])
-        mob_df = mob_df.set_index('plasmid_id')
-        metadata_df = metadata_df.merge(mob_df, left_index=True, right_index=True, suffixes=['_x', ''], how='left')
-        pf_summary = plasmidfinder_results.groupby('qseqid')['sseqid'].apply(lambda x: ','.join(x.unique()))
+        metadata_df['plasmid_id'] = metadata_df.index
 
-        metadata_df['plasmidfinder_reps'] = metadata_df.index.map(lambda s: pf_summary.loc[s] if s in pf_summary.index else None)
+        if not mob_df.empty and 'sample_id' in mob_df.columns:
+            mob_df = mob_df.copy()
+            mob_df['plasmid_id'] = mob_df['sample_id'].map(lambda s: str(s).split()[0])
+            mob_df = mob_df.set_index('plasmid_id')
+            metadata_df = metadata_df.merge(mob_df, left_index=True, right_index=True, suffixes=['_x', ''], how='left')
+            for col in list(metadata_df.columns):
+                if col.endswith('_x'):
+                    base_col = col[:-2]
+                    if base_col in metadata_df.columns:
+                        metadata_df[base_col] = metadata_df[base_col].combine_first(metadata_df[col])
+
+        if not plasmidfinder_results.empty and 'qseqid' in plasmidfinder_results.columns:
+            pf_summary = plasmidfinder_results.groupby('qseqid')['sseqid'].apply(lambda x: ','.join(x.unique()))
+            metadata_df['plasmidfinder_reps'] = metadata_df.index.map(lambda s: pf_summary.loc[s] if s in pf_summary.index else None)
+        else:
+            metadata_df['plasmidfinder_reps'] = None
+
         self.logger.debug("\n" + metadata_df.head().to_string())
 
         metadata_df['rep_type'] = metadata_df.apply(
@@ -836,52 +860,70 @@ class DatabaseBuilder:
         ).replace('', 'unknown').fillna('unknown')
         if 'rep_types' in metadata_df.columns:
             metadata_df = metadata_df.drop(columns=['rep_types'])
-        metadata_df['amr_genes'] = metadata_df.index.map(lambda s: ','.join(amrfinder_results[amrfinder_results['Contig id'] == s]['Element symbol'].unique()))
+        if not amrfinder_results.empty and 'Contig id' in amrfinder_results.columns:
+            metadata_df['amr_genes'] = metadata_df.index.map(
+                lambda s: ','.join(amrfinder_results[amrfinder_results['Contig id'] == s]['Element symbol'].unique())
+            )
+        elif 'amr_genes' not in metadata_df.columns:
+            metadata_df['amr_genes'] = ''
 
-        
-        metadata_df = metadata_df.drop(columns=[c for c in metadata_df.columns if '_x' in c])
+        metadata_df = metadata_df.drop(columns=[c for c in metadata_df.columns if c.endswith('_x')])
         metadata_df['sample_id'] = metadata_df.index
+        metadata_df['plasmid_id'] = metadata_df.index
 
         return metadata_df
     
     def _run_mob_cluster(self, sequences, metadata_df, mob_typer_file, output_dir):
         """Run Mob Cluster on representative sequences."""
+        seq_records = list(sequences.values()) if isinstance(sequences, dict) else list(sequences)
         tax_df = pd.DataFrame(index=metadata_df.index, columns=['id','organism'])
         tax_df['id'] = metadata_df.index
         tax_df['organism'] = 'Bacteria'
         tax_df.to_csv(str(Path(output_dir) / 'taxonomy.tsv'), sep='\t', index=False)
         self.logger.info("Running Mob Cluster...")
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta") as temp_fasta:
-            for seq in sequences:
+            for seq in seq_records:
                 seq.name = seq.id
                 seq.description = seq.id
-            SeqIO.write(sequences, temp_fasta, 'fasta')
+            SeqIO.write(seq_records, temp_fasta, 'fasta')
             plasmids_file = temp_fasta.name
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".tsv") as temp_tsv:
             metadata_df.to_csv(temp_tsv, sep='\t', index=False, columns=MOB_TYPER_COLS)
             cluster_mob_typer = temp_tsv.name
-        self.mob_runner.run_mob_cluster(plasmids_file, str(Path(output_dir) / 'mob_cluster'), cluster_mob_typer, str(Path(output_dir) / 'taxonomy.tsv'))
-        mob_clusters = pd.read_csv(str(Path(output_dir) / 'mob_cluster' / 'clusters.txt' ), sep='\t')
-        metadata_df.update(mob_clusters.set_index('sample_id'))
-        metadata_df['cluster_id'] = metadata_df['secondary_cluster_id']
-        return metadata_df
+        try:
+            self.mob_runner.run_mob_cluster(plasmids_file, str(Path(output_dir) / 'mob_cluster'), cluster_mob_typer, str(Path(output_dir) / 'taxonomy.tsv'))
+            mob_clusters = pd.read_csv(str(Path(output_dir) / 'mob_cluster' / 'clusters.txt' ), sep='\t')
+            metadata_df.update(mob_clusters.set_index('sample_id'))
+            metadata_df['cluster_id'] = metadata_df['secondary_cluster_id']
+            return metadata_df
+        finally:
+            for tmp_path in (plasmids_file, cluster_mob_typer):
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
 
-    def _write_database_files(self, sequences: Dict[str, SeqRecord], 
+    def _write_database_files(self, sequences: Union[Dict[str, SeqRecord], List[SeqRecord]], 
                              metadata_df: pd.DataFrame, output_dir: str) -> None:
         """Write database files to output directory."""
         os.makedirs(output_dir, exist_ok=True)
+        seq_records = list(sequences.values()) if isinstance(sequences, dict) else list(sequences)
         
         # Write FASTA file
         fasta_path = os.path.join(output_dir, "plasmidDB.fasta")
         with open(fasta_path, 'w') as f:
-            SeqIO.write(sequences, f, 'fasta')
+            SeqIO.write(seq_records, f, 'fasta')
         
         # Update sequence lengths in metadata
-        for record in sequences:
+        for record in seq_records:
             seq_id = record.id
-            mask = metadata_df['plasmid_id'] == seq_id
-            if mask.any():
-                metadata_df.loc[mask, 'length'] = len(record.seq)
+            if 'plasmid_id' in metadata_df.columns:
+                mask = metadata_df['plasmid_id'] == seq_id
+                if mask.any():
+                    metadata_df.loc[mask, 'length'] = len(record.seq)
+            elif seq_id in metadata_df.index:
+                metadata_df.loc[seq_id, 'length'] = len(record.seq)
 
         # Ensure single canonical rep_type column and drop redundant rep_types
         if 'rep_types' in metadata_df.columns:
@@ -988,15 +1030,16 @@ class DatabaseBuilder:
 
         return target_path
 
-    def _write_pling_fastas(self, sequences: Dict[str, SeqRecord], output_dir: str) -> Path:
+    def _write_pling_fastas(self, sequences: Union[Dict[str, SeqRecord], List[SeqRecord]], output_dir: str) -> Path:
         """Write individual FASTA files and manifest path list for Pling."""
+        seq_records = list(sequences.values()) if isinstance(sequences, dict) else list(sequences)
         fasta_dir = Path(output_dir) / 'fastas'
         fasta_dir.mkdir(exist_ok=True)
-        for seq in sequences:
+        for seq in seq_records:
             SeqIO.write(seq, str(fasta_dir / f'{seq.id}.fasta'), 'fasta')
         fasta_path_file = Path(output_dir) / 'pling_fasta_paths.txt'
         with open(fasta_path_file, 'w') as f:
-            f.write('\n'.join([str(fasta_dir / f'{seq.id}.fasta') for seq in sequences]))
+            f.write('\n'.join([str(fasta_dir / f'{seq.id}.fasta') for seq in seq_records]))
         return fasta_path_file
 
     def _load_previous_pling_data(self, pling_dir: Path, 

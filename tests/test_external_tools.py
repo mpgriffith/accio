@@ -2,6 +2,7 @@
 
 import pytest
 import subprocess
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from accio.wrappers.external_tools import BLASTRunner, ExternalToolError, check_tool_availability
@@ -130,4 +131,101 @@ def test_mob_runner_error_format():
     msg = runner._format_mob_error("MOB-recon", Exception("Command not found"))
     assert "conda create -n mob_suite -c bioconda mob_suite" in msg
     assert "pandas <= 1.5.3" in msg
+
+
+def test_blastn_handles_paths_with_spaces_and_threads(monkeypatch):
+    """Test that BLASTRunner.run_blastn passes paths with spaces intact and includes -num_threads."""
+    from accio.config import AnalysisConfig
+    cfg = AnalysisConfig()
+    cfg.THREADS = 12
+    runner = BLASTRunner(config=cfg)
+
+    captured_cmd = []
+    def mock_check_output(cmd, **kwargs):
+        captured_cmd.extend(cmd)
+        return b""
+
+    monkeypatch.setattr("subprocess.check_output", mock_check_output)
+    runner.run_blastn("/path/with spaces/query.fasta", "/path/with spaces/db")
+
+    assert "/path/with spaces/query.fasta" in captured_cmd
+    assert "/path/with spaces/db" in captured_cmd
+    assert "-num_threads" in captured_cmd
+    assert captured_cmd[captured_cmd.index("-num_threads") + 1] == "12"
+
+
+def test_nucmer_handles_paths_with_spaces(monkeypatch, tmp_path):
+    """Test that NucmerRunner.run_nucmer passes paths with spaces intact without splitting them."""
+    from accio.wrappers.external_tools import NucmerRunner
+    runner = NucmerRunner()
+
+    prefix = tmp_path / "space dir" / "out_pref"
+    prefix.parent.mkdir(parents=True)
+    (Path(f"{prefix}.coords")).write_text("")
+    (Path(f"{prefix}.snps")).write_text("")
+
+    captured_cmds = []
+    def mock_check_call(cmd, **kwargs):
+        captured_cmds.append(cmd)
+
+    monkeypatch.setattr("subprocess.check_call", mock_check_call)
+    runner.run_nucmer("/ref with spaces/ref.fa", "/query with spaces/q.fa", str(prefix))
+
+    assert captured_cmds[0][0] == "nucmer"
+    assert "/ref with spaces/ref.fa" in captured_cmds[0]
+    assert "/query with spaces/q.fa" in captured_cmds[0]
+
+
+def test_read_mapping_runner_uses_mapping_preset(monkeypatch, tmp_path):
+    """Test that ReadMappingRunner.map_reads uses config.MAPPING_PRESET when use_minimap=True."""
+    from accio.wrappers.external_tools import ReadMappingRunner
+    from accio.config import AnalysisConfig
+
+    cfg = AnalysisConfig()
+    cfg.MAPPING_PRESET = "sr"
+    cfg.THREADS = 6
+    runner = ReadMappingRunner(config=cfg)
+
+    popen_cmds = []
+    class MockProc:
+        def __init__(self, cmd, **kwargs):
+            popen_cmds.append(cmd)
+            self.stdout = MagicMock()
+            self.returncode = 0
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr("subprocess.Popen", MockProc)
+    monkeypatch.setattr("subprocess.check_call", lambda cmd, **kw: None)
+
+    out_bam = runner.map_reads("ref.fa", ["r1.fq", "r2.fq"], str(tmp_path / "test"), use_minimap=True)
+    assert out_bam.endswith(".bam")
+    minimap_cmd = popen_cmds[0]
+    assert minimap_cmd[:5] == ["minimap2", "-a", "-P", "-x", "sr"]
+    assert "-t" in minimap_cmd and minimap_cmd[minimap_cmd.index("-t") + 1] == "6"
+
+
+def test_mash_screen_and_skani_dist_pass_threads(monkeypatch):
+    """Test that MashRunner.run_screen and SkaniRunner.run_ska_dist pass configured threads."""
+    from accio.wrappers.external_tools import MashRunner, SkaniRunner
+    from accio.config import AnalysisConfig
+
+    cfg = AnalysisConfig()
+    cfg.THREADS = 10
+    mash_runner = MashRunner(config=cfg)
+    skani_runner = SkaniRunner(config=cfg)
+
+    recorded_cmds = []
+    def mock_run(cmd, **kwargs):
+        recorded_cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", mock_run)
+    mash_runner.run_screen("db.msh", "query.fa")
+    skani_runner.run_ska_dist("plasmids.fa", "out.tsv")
+
+    assert recorded_cmds[0] == ["mash", "screen", "-p", "10", "db.msh", "query.fa"]
+    assert "-t" in recorded_cmds[1] and recorded_cmds[1][recorded_cmds[1].index("-t") + 1] == "10"
+
+
 

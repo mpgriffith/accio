@@ -1,7 +1,8 @@
 """Tests for accio.cli argument parsing and commands."""
 
+import argparse
 import pytest
-from accio.cli import create_main_parser
+from accio.cli import create_main_parser, handle_find_command, handle_create_command, handle_multi_command
 
 
 def test_main_parser_create_subcommand():
@@ -188,20 +189,25 @@ def test_essential_tool_check_in_cli(monkeypatch, tmp_path):
     }
     monkeypatch.setattr("accio.cli.check_tool_availability", lambda: mock_availability)
 
+    dummy_fa = tmp_path / "dummy.fa"
+    dummy_fa.write_text(">c1\nATGC\n")
+
     # find command
     find_args = argparse.Namespace(
-        assembly="dummy.fa",
+        assembly=str(dummy_fa),
         database=str(tmp_path),
         output=str(tmp_path),
         reads=None,
-        minimap2=False
+        minimap2=False,
+        log_file=None
     )
     assert handle_find_command(find_args) == 1
 
     # create command
     create_args = argparse.Namespace(
-        inputs=["dummy.fa"],
+        input=[str(dummy_fa)],
         output=str(tmp_path),
+        force=True,
         threads=4,
         min_length=10000,
         max_length=1000000
@@ -270,4 +276,75 @@ def test_cli_find_and_create_mob_env_args():
     args_create = parser.parse_args(['create', 'p1.fasta', '-o', 'out_db', '--mob-env', 'create_env', '--mob-bin-dir', '/other/bins'])
     assert args_create.mob_env == 'create_env'
     assert args_create.mob_bin_dir == '/other/bins'
+
+
+def test_handle_setup_mob_command_runs_without_name_error(monkeypatch):
+    """Test that handle_setup_mob_command has shutil and subprocess imported and executes cleanly."""
+    from accio.cli import handle_setup_mob_command
+    called_cmd = []
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/mamba" if name == "mamba" else None)
+    monkeypatch.setattr("subprocess.check_call", lambda cmd: called_cmd.append(cmd))
+
+    rc = handle_setup_mob_command(argparse.Namespace(env_name="mob_suite_test"))
+    assert rc == 0
+    assert len(called_cmd) == 1
+    assert "mob_suite_test" in called_cmd[0]
+
+
+def test_handle_combine_command_basic_and_db_remapping(tmp_path):
+    """Test accio collate (handle_combine_command) both with and without database pling_type remapping."""
+    from accio.cli import handle_combine_command
+    import pandas as pd
+
+    # Set up two sample output directories
+    db_old = tmp_path / "db_v1"
+    db_new = tmp_path / "db_v2"
+    db_old.mkdir()
+    db_new.mkdir()
+
+    # Collation database (db_v2) maps old pling_type -> new pling_type
+    pd.DataFrame([
+        {'plasmid_id': 'p1', 'pling_type': 'new_subcomm_1', 'db_v1_pling_type': 'old_subcomm_1'},
+        {'plasmid_id': 'p2', 'pling_type': 'new_subcomm_2', 'db_v1_pling_type': 'old_subcomm_2'},
+    ]).to_csv(db_new / "plasmidDB_info.csv", index=False)
+
+    s1_dir = tmp_path / "results" / "sampleA"
+    s2_dir = tmp_path / "results" / "sampleB"
+    s1_dir.mkdir(parents=True)
+    s2_dir.mkdir(parents=True)
+
+    pd.DataFrame([
+        {'ACCIO_Plasmids': 'chosen_plasmid', 'plasmid_id': 'p1', 'cluster_id': 'c1', 'pling_type': 'old_subcomm_1'}
+    ]).to_csv(s1_dir / "sampleA_plasmids_chosen.csv", index=False)
+    (s1_dir / "sampleA_accio.log").write_text(f"INFO - Using database: {db_old}\n")
+
+    pd.DataFrame([
+        {'ACCIO_Plasmids': 'chosen_plasmid', 'plasmid_id': 'p2', 'cluster_id': 'c2', 'pling_type': 'old_subcomm_2'}
+    ]).to_csv(s2_dir / "sampleB_plasmids_chosen.csv", index=False)
+    (s2_dir / "sampleB_accio.log").write_text(f"INFO - Using database: {db_old}\n")
+
+    out_csv = tmp_path / "collated_summary.csv"
+    collate_args = argparse.Namespace(
+        input_pattern=str(tmp_path / "results" / "*" / "*_plasmids_chosen.csv"),
+        output=str(out_csv),
+        database=str(db_new)
+    )
+    rc = handle_combine_command(collate_args)
+    assert rc == 0
+    assert out_csv.exists()
+
+    summary_df = pd.read_csv(out_csv)
+    assert len(summary_df) == 2
+    assert set(summary_df['Sample']) == {'sampleA', 'sampleB'}
+    assert set(summary_df['pling_type']) == {'new_subcomm_1', 'new_subcomm_2'}
+
+
+def test_cli_version_flag():
+    """Test that -v / --version prints version and exits with code 0."""
+    parser = create_main_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(['--version'])
+    assert exc_info.value.code == 0
+
+
 

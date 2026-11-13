@@ -3,6 +3,8 @@
 import argparse
 import sys
 import os
+import shutil
+import subprocess
 import logging
 import glob
 import multiprocessing
@@ -1042,8 +1044,20 @@ def handle_multi_command(args: argparse.Namespace) -> int:
     """Handle the 'multi' subcommand to run analysis on multiple samples."""
     logger = logging.getLogger(__name__)
     
-    # Find all assembly files
-    assembly_files = args.assemblies
+    # Find all assembly files (supports directories, individual FASTA files, or glob patterns)
+    raw_assemblies = args.assemblies if isinstance(args.assemblies, list) else ([args.assemblies] if args.assemblies else [])
+    assembly_files = []
+    for item in raw_assemblies:
+        p = Path(item)
+        if p.is_dir():
+            for ext in ('.fasta', '.fa', '.fna'):
+                assembly_files.extend(str(f) for f in sorted(p.glob(f"*{ext}")))
+        elif p.is_file():
+            assembly_files.append(str(p))
+        else:
+            matched = sorted(glob.glob(str(item)))
+            assembly_files.extend(matched)
+
     if not assembly_files:
         logger.error(f"No assembly files found in {args.assemblies}")
         return 1
