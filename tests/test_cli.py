@@ -347,4 +347,33 @@ def test_cli_version_flag():
     assert exc_info.value.code == 0
 
 
+def test_cli_create_hybrid_flag(monkeypatch, tmp_path):
+    """Test that --hybrid in accio create sets check_circular=True, skip_replicon_filter=False, and hybrid=True."""
+    from accio.cli import handle_create_command
+    parser = create_main_parser()
+    asm_file = tmp_path / "Sample1_hybrid.fasta"
+    asm_file.write_text(">1 circular=true\nATGC\n")
+    out_dir = tmp_path / "hybrid_db"
+
+    args = parser.parse_args(['create', str(asm_file), '-o', str(out_dir), '--hybrid'])
+    assert args.hybrid is True
+
+    monkeypatch.setattr("accio.cli.check_tool_availability", lambda: {
+        'makeblastdb': {'available': True},
+        'mash': {'available': True},
+    })
+    captured_kwargs = {}
+    def mock_build_database(self, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {'total_sequences': 1, 'final_sequences': 1}
+    monkeypatch.setattr("accio.core.builder.DatabaseBuilder.build_database", mock_build_database)
+
+    rc = handle_create_command(args)
+    assert rc == 0
+    assert captured_kwargs['check_circular'] is True
+    assert captured_kwargs['skip_replicon_filter'] is False
+    assert captured_kwargs['hybrid'] is True
+
+
+
 

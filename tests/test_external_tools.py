@@ -114,6 +114,7 @@ def test_mob_runner_tool_resolution_custom_dir(tmp_path):
 
     fake_bin = tmp_path / "mob_recon"
     fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
 
     cfg = AnalysisConfig()
     cfg.MOB_BIN_DIR = str(tmp_path)

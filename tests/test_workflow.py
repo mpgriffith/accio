@@ -276,6 +276,7 @@ def test_process_plasmids_replicon_filtering(base_config):
 
     c1 = Contig("c1", SeqRecord(Seq("ATGC" * 100), id="c1"))
     c1.add_rep_type(pd.DataFrame([{'sseqid': 'IncFII_1'}]))
+    c2 = Contig("c2", SeqRecord(Seq("GGCC" * 100), id="c2"))  # rep_types is None by default
 
     p_match = Plasmid("p_match", "c1", "pt1", 1000, "db.msh", rep_type="IncFII")
     p_untyped = Plasmid("p_untyped", "c2", "pt2", 1000, "db.msh", rep_type=None)
@@ -284,10 +285,10 @@ def test_process_plasmids_replicon_filtering(base_config):
     plasmids = {"p_match": p_match, "p_untyped": p_untyped, "p_mismatch": p_mismatch}
     blast_results = {
         'blast': pd.DataFrame([{'qseqid': 'c1', 'sseqid': 'p_match'}]),
-        'mash': pd.DataFrame(columns=['sseqid', 'pident', 'shared-hashes', 'median-mult', 'pvalue'])
+        'mash': pd.DataFrame()
     }
 
-    matches = wf._process_plasmids({"c1": c1}, plasmids, blast_results, coverage_results=None)
+    matches = wf._process_plasmids({"c1": c1, "c2": c2}, plasmids, blast_results, coverage_results=None)
     assert "p_match" in plasmids
     assert "p_untyped" in plasmids
     assert "p_mismatch" not in plasmids

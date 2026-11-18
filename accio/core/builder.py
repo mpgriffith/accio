@@ -1,6 +1,7 @@
 """Database builder for Accio plasmid databases."""
 
 import os
+import re
 import logging
 import hashlib
 import shutil
@@ -65,7 +66,8 @@ class DatabaseBuilder:
                       deduplicate: bool = False,
                       validate_sequences: bool = False,
                       cluster_threshold: float = 99.95,
-                      use_all: bool = False) -> Dict[str, Any]:
+                      skip_replicon_filter: bool = False,
+                      hybrid: bool = False) -> Dict[str, Any]:
         """
         Build plasmid database from input sequences.
         
@@ -82,10 +84,15 @@ class DatabaseBuilder:
             deduplicate: Remove duplicate sequences
             validate_sequences: Validate sequence quality
             cluster_threshold: Skani ANI percentage threshold for clustering (default: 99.95)
+            skip_replicon_filter: Keep all sequences without requiring replicon/relaxase evidence
+            hybrid: Preset for hybrid genome assemblies (enforces check_circular=True and skip_replicon_filter=False)
             
         Returns:
             Dictionary with build statistics
         """
+        if hybrid:
+            check_circular = True
+            skip_replicon_filter = False
         self.logger.info("Starting database construction...")
 
         output_path = Path(output_dir)
@@ -120,7 +127,7 @@ class DatabaseBuilder:
         # Process input sequences
         self.logger.info("Processing input sequences...")
         sequences, stats = self._process_input_sequences(
-            input_files, validate_sequences, check_circular, use_all
+            input_files, validate_sequences, check_circular
         )
         self.logger.info(f"Processed {stats['total_input']} input sequences")
         self.logger.info(f"Filtered to {len(sequences)} valid sequences")
@@ -139,7 +146,7 @@ class DatabaseBuilder:
 
         # Type sequences and filter for plasmids
         plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results = self._type_and_filter_sequences(
-            sequences, output_path, use_all
+            sequences, output_path, skip_replicon_filter
         )
 
         # Cluster plasmids to find representatives
@@ -313,7 +320,7 @@ class DatabaseBuilder:
             self.logger.info("PlasmidFinder database found.")
 
 
-    def _type_and_filter_sequences(self, sequences: Dict[str, SeqRecord], output_path: Path, use_all: bool):
+    def _type_and_filter_sequences(self, sequences: Dict[str, SeqRecord], output_path: Path, skip_replicon_filter: bool = False):
         """Run typing tools and filter sequences to identify plasmids."""
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".fasta") as temp_fasta:
             SeqIO.write(sequences.values(), temp_fasta, 'fasta')
@@ -328,7 +335,7 @@ class DatabaseBuilder:
             amrfinder_results = self._run_amrfinder(all_seqs_file, output_path)
 
             # Filter for sequences that are likely plasmids
-            plasmids = self._filter_plasmids(sequences, mob_df, plasmidfinder_results, use_all)
+            plasmids = self._filter_plasmids(sequences, mob_df, plasmidfinder_results, skip_replicon_filter)
             return plasmids, mob_df, plasmidfinder_results, mob_typer_file, amrfinder_results
         finally:
             if os.path.exists(all_seqs_file):
@@ -373,27 +380,40 @@ class DatabaseBuilder:
 
     def _filter_plasmids(self, sequences: Dict[str, SeqRecord], mob_results: pd.DataFrame,
                        plasmidfinder_results: pd.DataFrame,
-                       use_all: bool=False) -> Dict[str, SeqRecord]:
-        """Filter plasmids based on MOB-typer and PlasmidFinder results."""
+                       skip_replicon_filter: bool = False) -> Dict[str, SeqRecord]:
+        """Filter plasmids based on MOB-typer (replicon or relaxase) and PlasmidFinder results."""
         keep_ids = set()
+
+        def _has_mob_feature(val: Any) -> bool:
+            return pd.notna(val) and str(val).strip().lower() not in ('', '-', 'none', 'null', 'nan', 'unknown')
         
         for p_id, p_record in sequences.items():
-            mob_plasmid = mob_results[mob_results['contig_id'] == p_id]
-            pf_plasmid = plasmidfinder_results[plasmidfinder_results['qseqid'] == p_id]
+            mob_plasmid = (
+                mob_results[mob_results['contig_id'] == p_id]
+                if (not mob_results.empty and 'contig_id' in mob_results.columns)
+                else pd.DataFrame()
+            )
+            pf_plasmid = (
+                plasmidfinder_results[plasmidfinder_results['qseqid'] == p_id]
+                if (not plasmidfinder_results.empty and 'qseqid' in plasmidfinder_results.columns)
+                else pd.DataFrame()
+            )
             
-            # Keep if `use_all` is true, or if it has any PlasmidFinder hits
-            if use_all or not pf_plasmid.empty:
+            # Keep if `skip_replicon_filter` is true, or if it has any PlasmidFinder hits
+            if skip_replicon_filter or not pf_plasmid.empty:
                 keep_ids.add(p_id)
-            # Keep if MOB-typer found a replicon type
-            elif not mob_plasmid.empty and mob_plasmid.iloc[0].get('rep_type(s)', '-') != '-':
+            # Keep if MOB-typer found a replicon type or relaxase type
+            elif not mob_plasmid.empty and (
+                _has_mob_feature(mob_plasmid.iloc[0].get('rep_type(s)', '-')) or
+                _has_mob_feature(mob_plasmid.iloc[0].get('relaxase_type(s)', '-'))
+            ):
                 keep_ids.add(p_id)
                     
-        self.logger.info(f"Filtered to {len(keep_ids)} plasmids with replicon evidence.")
+        self.logger.info(f"Filtered to {len(keep_ids)} plasmids with replicon or relaxase evidence.")
         return {p_id: sequences[p_id] for p_id in keep_ids}
         
     def _process_input_sequences(self, input_files: List[str], 
-                               validate: bool, check_circular: bool,
-                               use_all: bool = False) -> Tuple[Dict[str, SeqRecord], Dict[str, Any]]:
+                               validate: bool, check_circular: bool) -> Tuple[Dict[str, SeqRecord], Dict[str, Any]]:
         """Process and filter input sequences."""
         sequences = {}
         stats = {
@@ -402,7 +422,8 @@ class DatabaseBuilder:
             'filtered_quality': 0,
             'filtered_circular': 0,
             'circular_count': 0,
-            'duplicate_ids_renamed': 0
+            'duplicate_ids_renamed': 0,
+            'sample_prefixed_count': 0
         }
         
         for file_path in input_files:
@@ -431,8 +452,13 @@ class DatabaseBuilder:
                         stats['filtered_circular'] += 1
                         continue
                     
-                    # Clean sequence ID
-                    clean_id = self._clean_sequence_id(record.id)
+                    # Clean sequence ID and ensure sample name prefix if needed
+                    raw_clean_id = self._clean_sequence_id(record.id)
+                    clean_id = self._format_contig_id_with_sample(
+                        raw_clean_id, file_path, check_circular=check_circular
+                    )
+                    if clean_id != raw_clean_id:
+                        stats['sample_prefixed_count'] += 1
 
                     # Handle duplicate IDs across files or within files
                     if clean_id in sequences:
@@ -442,10 +468,16 @@ class DatabaseBuilder:
                             f"Disambiguating sequence ID to prevent overwriting."
                         )
                         dup_idx = 1
-                        disambiguated_id = f"{clean_id}_{file_stem}"
+                        if file_stem.lower() in clean_id.lower():
+                            disambiguated_id = f"{clean_id}_{dup_idx + 1}"
+                        else:
+                            disambiguated_id = f"{clean_id}_{file_stem}"
                         while disambiguated_id in sequences:
                             dup_idx += 1
-                            disambiguated_id = f"{clean_id}_{file_stem}_{dup_idx}"
+                            if file_stem.lower() in clean_id.lower():
+                                disambiguated_id = f"{clean_id}_{dup_idx + 1}"
+                            else:
+                                disambiguated_id = f"{clean_id}_{file_stem}_{dup_idx}"
                         clean_id = disambiguated_id
                         stats['duplicate_ids_renamed'] += 1
 
@@ -459,6 +491,45 @@ class DatabaseBuilder:
                 continue
         
         return sequences, stats
+
+    def _format_contig_id_with_sample(self, clean_id: str, file_path: str, check_circular: bool = False) -> str:
+        """
+        Prefix contig ID with the sample name derived from file_path if the contig ID
+        does not already include the sample name.
+        """
+        file_stem = Path(file_path).stem
+        # Strip common generic assembly suffixes to get core sample name
+        sample_name = re.sub(
+            r'[-_.]?(assembly|contigs|scaffolds|hybrid|polished|unicycler|flye|plasmids|sequences|fasta|fna|fa)$',
+            '',
+            file_stem,
+            flags=re.IGNORECASE
+        ).strip('_- ')
+        if not sample_name:
+            sample_name = file_stem
+
+        # Check if clean_id already contains the sample name or file stem (case-insensitive, separator-agnostic)
+        norm_id = re.sub(r'[^a-z0-9]', '', clean_id.lower())
+        norm_sample = re.sub(r'[^a-z0-9]', '', sample_name.lower())
+        norm_stem = re.sub(r'[^a-z0-9]', '', file_stem.lower())
+
+        if (norm_sample and norm_sample in norm_id) or (norm_stem and norm_stem in norm_id):
+            return clean_id
+
+        # Check if clean_id is a generic assembler contig identifier (e.g., '1', 'contig_1', 'scaffold_2', 'ptg000001c')
+        is_generic_contig = bool(re.match(
+            r'^(\d+[a-z]?|(contig|scaffold|node|edge|tig|utg|ptg|ctg|chr|chromosome|plasmid|unitig|circular)[_-]?\d+[a-z]?)$',
+            clean_id,
+            flags=re.IGNORECASE
+        ))
+
+        generic_filenames = {'plasmids', 'sequences', 'input', 'all_plasmids', 'plasmiddb', 'plasmid_db', 'test', 'ref', 'references'}
+        is_sample_filename = sample_name.lower() not in generic_filenames and file_stem.lower() not in generic_filenames
+
+        if is_generic_contig or (check_circular and is_sample_filename):
+            return f"{sample_name}_{clean_id}"
+
+        return clean_id
     
     def _validate_sequence(self, record: SeqRecord) -> bool:
         """Validate sequence quality."""
@@ -478,11 +549,26 @@ class DatabaseBuilder:
         return True
     
     def _check_circularity(self, record: SeqRecord) -> bool:
-        """Check if a sequence is likely circular based on circular in description or terminal overlaps."""
+        """Check if a sequence is likely circular based on header description or terminal overlaps."""
         seq_str = str(record.seq)
         seq_len = len(seq_str)
-        if 'circular=true' in record.description.lower():
-            return True
+        desc_lower = record.description.lower()
+
+        neg_patterns = (
+            'circular=false', 'circular=no', 'circular=n', 'circular=0',
+            'circular: false', 'circular: no',
+            'suggestcircular=no', 'suggestcircular=false',
+            'topology=linear', 'non-circular', 'noncircular', 'not circular', 'uncircular'
+        )
+        if not any(neg in desc_lower for neg in neg_patterns):
+            pos_patterns = (
+                'circular=true', 'circular=yes', 'circular=y', 'circular=1',
+                'circular: true', 'circular: yes',
+                'topology=circular', 'suggestcircular=yes', 'suggestcircular=true'
+            )
+            if any(pos in desc_lower for pos in pos_patterns) or re.search(r'\bcircular\b', desc_lower):
+                return True
+
         # Check for terminal overlaps (common in circular assemblies)
         overlap_sizes = [20, 50, 100, 200]
         

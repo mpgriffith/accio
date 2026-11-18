@@ -185,7 +185,7 @@ def test_repetitive_contig_assign_and_repr():
     assert summary['assigned plasmid(s)'] == ["p1", "p2"]
 
 
-qdef test_contig_add_blast_data_and_copy_num():
+def test_contig_add_blast_data_and_copy_num():
     """Test Contig.add_blast_data filtering (linear vs circular) and add_copy_num threshold."""
     seq = SeqRecord(Seq("ATGC" * 250), id="c_lin")  # 1000 bp
     c_lin = Contig("c_lin", seq, circular=False)

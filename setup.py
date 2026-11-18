@@ -1,3 +1,5 @@
+import re
+from pathlib import Path
 from setuptools import setup, find_packages
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -6,9 +8,15 @@ with open("README.md", "r", encoding="utf-8") as fh:
 with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
+init_text = Path("accio/__init__.py").read_text(encoding="utf-8")
+version_match = re.search(r'^__version__\s*=\s*[\'"]([^\'"]*)[\'"]', init_text, re.MULTILINE)
+if not version_match:
+    raise RuntimeError("Unable to find __version__ string in accio/__init__.py")
+version = version_match.group(1)
+
 setup(
     name="accio",
-    version="0.1.0",
+    version=version,
     author="Marissa Griffith",
     author_email="mpp19@pitt.edu",
     description="A comprehensive tool for plasmid analysis and assignment in bacterial genomes",

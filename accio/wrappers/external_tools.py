@@ -418,9 +418,9 @@ class MOBRunner:
         bin_dir = getattr(self.config, 'MOB_BIN_DIR', None) or os.environ.get('ACCIO_MOB_BIN_DIR')
         if bin_dir:
             cand = os.path.join(bin_dir, tool_name)
-            if shutil.which(cand):
+            if shutil.which(cand) or os.path.isfile(cand):
                 return [cand]
-            if os.name == 'nt' and shutil.which(cand + '.exe'):
+            if os.name == 'nt' and (shutil.which(cand + '.exe') or os.path.isfile(cand + '.exe')):
                 return [cand + '.exe']
 
         if shutil.which(tool_name):

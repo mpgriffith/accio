@@ -187,7 +187,7 @@ accio check --all --databases /path/to/database
 
 Install core bioinformatics tools via conda:
 ```bash
-conda install -c conda-forge -c bioconda blast mash mummer4 samtools bwa minimap2 pysam skani ncbi-amrfinderplus
+conda install -c conda-forge -c bioconda blast mash mummer4 samtools bwa minimap2 pysam skani ncbi-amrfinderplus pling
 ```
 
 ### Environment & Dependency Notes (MOB-suite vs. Pling/Plasnet)
@@ -197,18 +197,14 @@ conda install -c conda-forge -c bioconda blast mash mummer4 samtools bwa minimap
 >
 > **Accio's Automatic Solution**:
 > Accio runs on modern Python (`pandas >= 2.0`) alongside Pling and Plasnet, and **automatically routes MOB-suite calls** (`mob_recon`, `mob_typer`, `mob_cluster`) to a dedicated `mob_suite` Conda environment if they are not in your main PATH.
->
-> 1. In your main Accio environment (`pandas >= 2`), install dependencies:
->    ```bash
->    pip install pling plasnet
->    ```
-> 2. Create the companion MOB-suite environment in one step:
+
+>  Create the companion MOB-suite environment in one step:
 >    ```bash
 >    accio setup-mob
 >    ```
 >    *(or manually: `conda create -y -n mob_suite -c bioconda mob_suite`)*
 > 
-> Accio will automatically detect and execute MOB-suite tools inside `mob_suite` without requiring manual environment activation or wrapper scripts! You can also customize the environment with `--mob_env <env_name>` or specify custom binaries via `--mob_bin_dir <dir>`.
+> Accio will automatically detect and execute MOB-suite tools inside `mob_suite` without requiring manual environment activation or wrapper scripts. You can also customize the environment with `--mob_env <env_name>` or specify custom binaries via `--mob_bin_dir <dir>`.
 
 ## 🧬 Algorithm Overview
 
@@ -309,7 +305,9 @@ pytest
 ```
 
 ## Citation
-ACCIO is currently available as a preprint, please cite: [Raabe NJ, Griffith MP, Rangachar Srinivasa V, Waggle KD, Sundermann AJ, Pless LL, Snyder GM, Brooks MM, Van Tyne D, Harrison LH. ACCIO: an assembly-based tool enabling plasmid detection. Microb Genom. 2026 Oct;12(10). doi: 10.1099/mgen.0.001843. PMID: 42932221: https://doi.org/10.1101/2025.10.30.25338662](https://www.medrxiv.org/content/10.1101/2025.10.30.25338662).
+If you use ACCIO in your research, please cite:
+
+> [Raabe NJ, Griffith MP, Rangachar Srinivasa V, Waggle KD, Sundermann AJ, Pless LL, Snyder GM, Brooks MM, Van Tyne D, Harrison LH. ACCIO: an assembly-based tool enabling plasmid detection. Microb Genom. 2026 Oct;12(10). doi: 10.1099/mgen.0.001843. PMID: 42932221.](https://doi.org/10.1099/mgen.0.001843)
 
 ##  License
 

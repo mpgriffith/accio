@@ -532,4 +532,71 @@ def test_pling_get_dcj_dist_by_length_and_fallback(monkeypatch, tmp_path):
     assert 'cluster' in calls[1] and 'align' in calls[1]
 
 
+def test_filter_plasmids_keeps_relaxase_and_rep_type(builder):
+    """Test that _filter_plasmids retains contigs with PlasmidFinder hit, MOB rep_type, or MOB relaxase_type."""
+    seqs = {
+        'p_pf': SeqRecord(Seq("ATGC" * 100), id='p_pf'),
+        'p_mob_rep': SeqRecord(Seq("ATGC" * 100), id='p_mob_rep'),
+        'p_mob_relax': SeqRecord(Seq("ATGC" * 100), id='p_mob_relax'),
+        'p_none': SeqRecord(Seq("ATGC" * 100), id='p_none'),
+    }
+    pf_df = pd.DataFrame([{'qseqid': 'p_pf', 'sseqid': 'IncFII_1'}])
+    mob_df = pd.DataFrame([
+        {'contig_id': 'p_pf', 'rep_type(s)': '-', 'relaxase_type(s)': '-'},
+        {'contig_id': 'p_mob_rep', 'rep_type(s)': 'IncX3', 'relaxase_type(s)': '-'},
+        {'contig_id': 'p_mob_relax', 'rep_type(s)': '-', 'relaxase_type(s)': 'MOBP'},
+        {'contig_id': 'p_none', 'rep_type(s)': '-', 'relaxase_type(s)': '-'},
+    ])
+
+    kept = builder._filter_plasmids(seqs, mob_df, pf_df, skip_replicon_filter=False)
+    assert set(kept.keys()) == {'p_pf', 'p_mob_rep', 'p_mob_relax'}
+
+    kept_all = builder._filter_plasmids(seqs, mob_df, pf_df, skip_replicon_filter=True)
+    assert set(kept_all.keys()) == {'p_pf', 'p_mob_rep', 'p_mob_relax', 'p_none'}
+
+
+def test_check_circularity_broad_headers(builder):
+    """Test that _check_circularity recognizes various circular header formats and rejects negative ones."""
+    linear_seq = Seq("A" * 200 + "G" * 200)
+
+    for pos_desc in [
+        "1 length=50000 circular=true",
+        "contig_2 circular=yes",
+        "contig_3 [topology=circular]",
+        "tig001 suggestCircular=yes",
+        "plasmid1 complete circular sequence",
+    ]:
+        rec = SeqRecord(linear_seq, id="c1", description=pos_desc)
+        assert builder._check_circularity(rec) is True, f"Should be circular: {pos_desc}"
+
+    for neg_desc in [
+        "1 length=50000 circular=false",
+        "contig_2 circular=no",
+        "contig_3 [topology=linear]",
+        "tig001 suggestCircular=no",
+        "contig_4 non-circular sequence",
+    ]:
+        rec = SeqRecord(linear_seq, id="c1", description=neg_desc)
+        assert builder._check_circularity(rec) is False, f"Should not be circular: {neg_desc}"
+
+
+def test_sample_name_prefixing_and_existing_sample_check(tmp_path):
+    """Test that generic contig IDs get prefixed with sample name unless sample name is already present."""
+    builder = DatabaseBuilder(min_length=100)
+    sample_file = tmp_path / "KPN001_hybrid.fasta"
+    sample_file.write_text(
+        ">1 circular=true\n" + ("A" * 100 + "G" * 100) + "\n"
+        ">contig_2 circular=true\n" + ("C" * 100 + "T" * 100) + "\n"
+        ">KPN001_contig_3 circular=true\n" + ("A" * 100 + "C" * 100) + "\n"
+    )
+
+    sequences, stats = builder._process_input_sequences([str(sample_file)], validate=False, check_circular=True)
+    assert "KPN001_1" in sequences
+    assert "KPN001_contig_2" in sequences
+    assert "KPN001_contig_3" in sequences
+    assert "KPN001_KPN001_contig_3" not in sequences
+    assert stats['sample_prefixed_count'] == 2
+
+
+
 

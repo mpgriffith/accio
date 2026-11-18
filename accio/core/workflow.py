@@ -1,6 +1,7 @@
 """Main workflow orchestrator for plasmid analysis."""
 
 import logging
+import re
 import shutil
 import pandas as pd
 from pathlib import Path
@@ -163,7 +164,22 @@ class PlasmidAnalysisWorkflow:
         for seq in SeqIO.parse(fasta_file, 'fasta'):
             # Only consider contigs that could be plasmids
             if len(seq) < 1.5 * MAX_PLASMID_LENGTH:
-                is_circular = 'circular=true' in seq.description.lower()
+                desc_lower = seq.description.lower()
+                neg_patterns = (
+                    'circular=false', 'circular=no', 'circular=n', 'circular=0',
+                    'circular: false', 'circular: no',
+                    'suggestcircular=no', 'suggestcircular=false',
+                    'topology=linear', 'non-circular', 'noncircular', 'not circular', 'uncircular'
+                )
+                pos_patterns = (
+                    'circular=true', 'circular=yes', 'circular=y', 'circular=1',
+                    'circular: true', 'circular: yes',
+                    'topology=circular', 'suggestcircular=yes', 'suggestcircular=true'
+                )
+                is_circular = (
+                    not any(neg in desc_lower for neg in neg_patterns) and
+                    (any(pos in desc_lower for pos in pos_patterns) or bool(re.search(r'\bcircular\b', desc_lower)))
+                )
                 if getattr(self.config, 'CIRCULAR_ONLY', False) and not is_circular:
                     continue
                 contigs[seq.id] = Contig(seq.id, seq, length=len(seq), circular=is_circular)
@@ -420,8 +436,9 @@ class PlasmidAnalysisWorkflow:
             
             # Process PLASMe results
             plasme_passed = False
-            if self.config.CLASSIFIER in ['plasme', 'both'] and not blast_results['plasme'].empty:
-                plasme_match = blast_results['plasme'][blast_results['plasme']['contig'] == contig_id]
+            plasme_df = blast_results.get('plasme', pd.DataFrame())
+            if self.config.CLASSIFIER in ['plasme', 'both'] and not plasme_df.empty and 'contig' in plasme_df.columns:
+                plasme_match = plasme_df[plasme_df['contig'] == contig_id]
                 if not plasme_match.empty:
                     # PLASMe-specific filtering (ambiguous regions, transformer evidence)
                     # This logic was previously in contig.add_plasme_data.
@@ -433,8 +450,9 @@ class PlasmidAnalysisWorkflow:
 
             # Process geNomad results
             genomad_passed = False
-            if self.config.CLASSIFIER in ['genomad', 'both'] and not blast_results['genomad'].empty:
-                genomad_match = blast_results['genomad'][blast_results['genomad']['seq_name'] == contig_id]
+            genomad_df = blast_results.get('genomad', pd.DataFrame())
+            if self.config.CLASSIFIER in ['genomad', 'both'] and not genomad_df.empty and 'seq_name' in genomad_df.columns:
+                genomad_match = genomad_df[genomad_df['seq_name'] == contig_id]
                 if not genomad_match.empty:
                     contig.add_genomad_data(genomad_match, self.config.GENOMAD_PLASMID_SCORE_THRESHOLD)
                     if hasattr(contig, 'classifier_scores') and 'genomad' in contig.classifier_scores:
@@ -451,18 +469,21 @@ class PlasmidAnalysisWorkflow:
                 pass
                 
             # Add replicon type data
-            if not blast_results['plasmidfinder'].empty:
-                rep_data = blast_results['plasmidfinder'][blast_results['plasmidfinder']['qseqid'] == contig_id]
+            pf_df = blast_results.get('plasmidfinder', pd.DataFrame())
+            if not pf_df.empty and 'qseqid' in pf_df.columns:
+                rep_data = pf_df[pf_df['qseqid'] == contig_id]
                 contig.add_rep_type(rep_data)
                 
             # Add repetitive element data
-            if not blast_results['repetitive'].empty:
-                rep_elem_data = blast_results['repetitive'][blast_results['repetitive']['qseqid'] == contig_id]
+            rep_df = blast_results.get('repetitive', pd.DataFrame())
+            if not rep_df.empty and 'qseqid' in rep_df.columns:
+                rep_elem_data = rep_df[rep_df['qseqid'] == contig_id]
                 contig.add_repetitive_data(rep_elem_data, self.config)
             
             # Add AMR gene data
-            if not blast_results['amr_genes'].empty:
-                amr_data = blast_results['amr_genes'][blast_results['amr_genes']['Contig id'] == contig_id].copy()
+            amr_df = blast_results.get('amr_genes', pd.DataFrame())
+            if not amr_df.empty and 'Contig id' in amr_df.columns:
+                amr_data = amr_df[amr_df['Contig id'] == contig_id].copy()
                 if not amr_data.empty:
                     amr_data['sim_score'] = amr_data['% Identity to reference'] * amr_data['% Coverage of reference'] / 100
                     amr_data = amr_data[amr_data['sim_score'] > 80]
@@ -506,7 +527,7 @@ class PlasmidAnalysisWorkflow:
         else:
             found_rep_types = [
                 r.split('_')[0].split('(')[0].split('-')[0]
-                for c in contigs.values() for r in getattr(c, 'rep_types', [])
+                for c in contigs.values() for r in (getattr(c, 'rep_types', None) or [])
             ]
             
         # Load plasmid database info for filtering
@@ -525,7 +546,11 @@ class PlasmidAnalysisWorkflow:
 
         for pid, plasmid in plasmids.items():
             # Check if plasmid's replicon types are present in sample
-            plasmid_rep_types = [rep_type.split('_')[0].split('(')[0].split('-')[0] for rep_type in plasmid.rep_type.split(',')] if type(plasmid.rep_type) == str else []
+            plasmid_rep_types = [
+                rep_type.strip().split('_')[0].split('(')[0].split('-')[0]
+                for rep_type in plasmid.rep_type.split(',')
+                if rep_type.strip() and rep_type.strip().lower() not in ('unknown', '-', 'none', 'nan')
+            ] if isinstance(plasmid.rep_type, str) else []
 
             if plasmid_rep_types:
                 has_matching_rep = any(
@@ -538,8 +563,8 @@ class PlasmidAnalysisWorkflow:
             if has_matching_rep:
                 filtered_plasmids[pid] = plasmid
                 # Check if any contigs match this plasmid
-                blast_data = blast_results['blast']
-                if not blast_data.empty:
+                blast_data = blast_results.get('blast', pd.DataFrame())
+                if not blast_data.empty and 'sseqid' in blast_data.columns:
                     plasmid_hits = blast_data[blast_data['sseqid'] == pid]
                     if not plasmid_hits.empty:
                         plasmid_matches.add(pid)
@@ -549,12 +574,11 @@ class PlasmidAnalysisWorkflow:
                                 cov_data=plasmid_bam_handle,
                                 median_depth=coverage_results.get('median_coverage')
                             )
-                mash_data = blast_results.get('mash', pd.DataFrame())
-                mash_data = mash_data[mash_data['sseqid'] == pid]
-                if not mash_data.empty:
-                    mash_data = mash_data[mash_data['sseqid'] == pid]
-                    if not mash_data.empty:
-                        plasmid.add_mash_data(mash_data[mash_data['sseqid'] == pid])
+                mash_df = blast_results.get('mash', pd.DataFrame())
+                if not mash_df.empty and 'sseqid' in mash_df.columns:
+                    plasmid_mash = mash_df[mash_df['sseqid'] == pid]
+                    if not plasmid_mash.empty:
+                        plasmid.add_mash_data(plasmid_mash)
         # Update plasmids dict
         plasmids.clear()
         plasmids.update(filtered_plasmids)
@@ -745,10 +769,11 @@ class PlasmidAnalysisWorkflow:
                 SeqIO.write(novel_seqs, novel_fasta, 'fasta')
                 mob_results, mob_contigs = self._run_and_parse_mob_recon(novel_fasta, output_dir)
                 amr_results = self._run_amrfinder(novel_fasta, output_dir)
-                for contig_id, df in amr_results.groupby('Contig id'):
-                    contig = next((c for c in novel_contigs if c.id == contig_id), None)
-                    if contig:
-                        contig.add_amr_genes(df['Element symbol'].tolist())
+                if not amr_results.empty and 'Contig id' in amr_results.columns:
+                    for contig_id, df in amr_results.groupby('Contig id'):
+                        contig = next((c for c in novel_contigs if c.id == contig_id), None)
+                        if contig:
+                            contig.add_amr_genes(df['Element symbol'].tolist())
             except (IOError, OSError) as e:
                 self.logger.error(f"Failed to write novel plasmids FASTA file: {e}")
                 return {'contigs': novel_contigs, 'mob_results': pd.DataFrame(), 'contig_results': pd.DataFrame()}

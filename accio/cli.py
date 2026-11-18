@@ -352,6 +352,9 @@ Examples:
     
     # Create database from directory of FASTA files
     accio create /path/to/plasmid_fastas/ -o database_dir --recursive
+
+    # Create database from hybrid genome assemblies
+    accio create /path/to/hybrid_assemblies/ -o database_dir --hybrid
     
     # Update existing database
     accio create new_plasmids.fasta -o new_db_dir --update previous_db_dir
@@ -431,6 +434,13 @@ Examples:
 
     # Quality control
     qc_group = create_parser.add_argument_group('Quality Control Options')
+
+    qc_group.add_argument(
+        '--hybrid',
+        action='store_true',
+        default=False,
+        help='Preset for building a database from hybrid genome assemblies (enables --check_circular, enforces replicon/relaxase filtering, and prefixes contig IDs with sample names)'
+    )
     
     qc_group.add_argument(
         '--check_circular', '--check-circular',
@@ -440,11 +450,12 @@ Examples:
     )
 
     qc_group.add_argument(
+        '--skip_replicon_filter', '--skip-replicon-filter',
         '--no_plasmid_check', '--no-plasmid-check',
         action='store_true',
         default=False,
         dest='no_plasmid_check',
-        help='Do not check for circularity/plasmid replicons'
+        help='Include all input sequences without filtering for plasmid replicon or relaxase evidence'
     )
 
     qc_group.add_argument(
@@ -849,6 +860,12 @@ def handle_create_command(args: argparse.Namespace) -> int:
         run_edit_dcj_flag = getattr(args, 'run_edit_dcj', False)
         run_edit_dcj = False if skip_edit_dcj else (True if run_edit_dcj_flag else None)
 
+        is_hybrid = getattr(args, 'hybrid', False)
+        check_circular = True if is_hybrid else args.check_circular
+        skip_replicon_filter = False if is_hybrid else args.no_plasmid_check
+        if is_hybrid:
+            logger.info("🧬 Hybrid assembly mode enabled: filtering for circular contigs with replicon or relaxase evidence and prefixing sample names.")
+
         # Build database
         results = builder.build_database(
             input_files=[str(p) for p in input_files],
@@ -860,12 +877,13 @@ def handle_create_command(args: argparse.Namespace) -> int:
             containment_distance=getattr(args, 'containment_distance', 0.3),
             min_size=args.min_length,
             max_size=args.max_length,
-            check_circular=args.check_circular,
+            check_circular=check_circular,
             no_cluster=args.no_clustering,
             deduplicate=args.deduplicate,
             validate_sequences=getattr(args, 'validate_sequences', False),
-            use_all=args.no_plasmid_check,
-            cluster_threshold=args.cluster_threshold
+            skip_replicon_filter=skip_replicon_filter,
+            cluster_threshold=args.cluster_threshold,
+            hybrid=is_hybrid
         )
         
         # Report results
