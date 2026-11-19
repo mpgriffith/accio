@@ -140,7 +140,8 @@ def test_process_contigs_amr_data(base_config):
     }
 
     with warnings.catch_warnings():
-        warnings.simplefilter("error", pd.errors.SettingWithCopyWarning)
+        if hasattr(pd.errors, "SettingWithCopyWarning"):
+            warnings.simplefilter("error", pd.errors.SettingWithCopyWarning)
         wf._process_contigs(contigs, blast_results, coverage_data=None)
 
     assert contig.amr_genes == ['blaCTX-M-15']

@@ -807,7 +807,7 @@ class DatabaseBuilder:
             # Add sequence lengths
             for seq in clus_seqs:
                 if seq.id in clus.index:
-                    clus.at[seq.id, 'len'] = len(seq)
+                    clus.loc[seq.id, 'len'] = len(seq)
                     
             clus['Plasmid'] = clus.index
             
@@ -1206,9 +1206,9 @@ class DatabaseBuilder:
                                      hub_plasmids: pd.DataFrame,
                                      communities: pd.DataFrame) -> pd.DataFrame:
         """Annotate plasmid metadata with pling typing, community, and hub designations."""
-        metadata_df = metadata_df.join(pling_types, how='left', lsuffix='_orig')
+        metadata_df = metadata_df.merge(pling_types, left_index=True, right_index=True, how='left', suffixes=('_orig', ''))
         if not communities.empty:
-            metadata_df = metadata_df.join(communities, how='left', lsuffix='_orig')
+            metadata_df = metadata_df.merge(communities, left_index=True, right_index=True, how='left', suffixes=('_orig', ''))
 
         cols_to_drop = [col for col in metadata_df.columns if col.endswith('_orig')]
         metadata_df = metadata_df.drop(columns=cols_to_drop)
