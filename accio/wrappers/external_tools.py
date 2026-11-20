@@ -651,7 +651,6 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
         'show-snps': {'cmd': 'show-snps -h', 'install': 'conda install -c bioconda mummer4'},
         'delta-filter': {'cmd': 'delta-filter -h', 'install': 'conda install -c bioconda mummer4'},
         'bwa': {'cmd': 'bwa', 'install': 'conda install -c bioconda bwa'},
-        'bwa-mem2': {'cmd': 'bwa-mem2', 'install': 'conda install -c bioconda bwa-mem2'},
         'minimap2': {'cmd': 'minimap2 --version', 'install': 'conda install -c bioconda minimap2'},
         'samtools': {'cmd': 'samtools --version', 'install': 'conda install -c bioconda samtools'},
         'skani': {'cmd': 'skani --version', 'install': 'conda install -c bioconda skani'},
@@ -698,9 +697,9 @@ def check_tool_availability() -> Dict[str, Dict[str, Any]]:
                 availability[tool]['available'] = True
                 if tool_note:
                     availability[tool]['note'] = tool_note
-            elif binary in ['bwa', 'bwa-mem2']:
-                combined = res.stdout + res.stderr
-                if b'Program: bwa' in combined or b'Usage: bwa' in combined:
+            elif binary == 'bwa':
+                combined = (res.stdout + res.stderr).lower()
+                if b'bwa' in combined or b'usage' in combined:
                     availability[tool]['available'] = True
             elif binary in ['show-coords', 'show-snps', 'delta-filter']:
                 combined = res.stdout + res.stderr

@@ -919,7 +919,7 @@ def handle_check_command(args: argparse.Namespace) -> int:
         essential_tools = ['blastn', 'makeblastdb', 'mash', 'nucmer', 'show-coords', 'samtools']
         database_tools = ['skani', 'amrfinder', 'mob_typer', 'mob_cluster', 'pling', 'plasnet']
         mapping_tools = ['bwa', 'minimap2']
-        optional_tools = ['genomad', 'PLASMe.py', 'mob_recon', 'bwa-mem2']
+        optional_tools = ['genomad', 'PLASMe.py', 'mob_recon']
         
         def check_tool_group(tools: List[str], group_name: str) -> bool:
             print(f"\n  {group_name}:")

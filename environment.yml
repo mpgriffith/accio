@@ -1,0 +1,26 @@
+name: accio
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.11
+  - pandas>=2.0
+  - biopython
+  - scipy
+  - numpy
+  - intervaltree
+  - pysam
+  - blast
+  - mash
+  - mummer4
+  - samtools
+  - bwa
+  - minimap2
+  - skani
+  - ncbi-amrfinderplus
+  - pling
+  - genomad
+  - pip
+  - pip:
+      - plasnet
+

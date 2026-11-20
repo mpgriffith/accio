@@ -22,11 +22,20 @@ A bioinformatics tool for assessing the plasmid content of clinical bacterial is
 ### Installation
 
 ```bash
-
-# From source
+# 1. Create and activate the Conda environment with all external bioinformatics tools
 git clone https://github.com/mpgriffith/accio.git
 cd accio
+conda env create -f environment.yml
+conda activate accio
+
+# 2. Install Accio (from the local clone or directly from a GitHub Release tarball)
 pip install -e .
+# Or install from the latest GitHub Release:
+# pip install https://github.com/mpgriffith/accio/releases/download/v0.2.0/accio-0.2.0.tar.gz
+
+# 3. Create the companion MOB-suite environment and verify tool installation
+accio setup-mob
+accio check --tools
 ```
 
 ### Find Plasmids in Assembly
